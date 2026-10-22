@@ -1,170 +1,96 @@
-import type { ReactNode } from "react";
+import type { ReactNode, SVGProps } from "react";
 
-import type { ArtKey } from "@/lib/demo-objects";
+import type { ObjectCategory } from "@/lib/demo-objects";
 
 /**
- * Ilustraciones vectoriales propias para los registros de demostración.
+ * Ilustraciones vectoriales de las categorías.
+ *
  * Trazo uniforme, formas geométricas y una paleta reducida: la misma
  * gramática visual en todas las piezas para que el conjunto se lea como un
- * sistema y no como un collage.
+ * sistema y no como un collage. Heredan `currentColor` para funcionar sobre
+ * fondos claros y oscuros.
  */
+type IconProps = SVGProps<SVGSVGElement>;
 
-const STROKE = {
-  strokeWidth: 5,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
+function IconBase({ children, ...props }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      {...props}
+    >
+      {children}
+    </svg>
+  );
+}
 
-const ART: Record<ArtKey, ReactNode> = {
-  headphones: (
+const ART: Record<ObjectCategory, ReactNode> = {
+  electronicos: (
     <>
-      <path
-        d="M26 74V60a34 34 0 0 1 68 0v14"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <rect x="14" y="64" width="22" height="38" rx="11" fill="currentColor" />
-      <rect x="84" y="64" width="22" height="38" rx="11" fill="currentColor" />
-      <circle cx="60" cy="34" r="4.5" fill="#4F7CFF" />
+      <rect x="3.4" y="4.6" width="17.2" height="11" rx="2" />
+      <path d="M2 19.4h20" />
     </>
   ),
-  charger: (
+  documentos: (
     <>
-      <rect
-        x="30"
-        y="44"
-        width="46"
-        height="42"
-        rx="12"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <rect x="44" y="22" width="8" height="18" rx="4" fill="currentColor" />
-      <rect x="54" y="22" width="8" height="18" rx="4" fill="currentColor" />
-      <rect x="45" y="60" width="16" height="6" rx="3" fill="#4F7CFF" />
+      <path d="M6 3.4h7.4L18.6 8v12.6H6z" />
+      <path d="M13.2 3.6V8h5.2M9 12.6h6M9 16h4" />
     </>
   ),
-  mouse: (
+  llaves: (
     <>
-      <path
-        d="M60 24c15 0 22 12 22 27v14c0 16-8 27-22 27s-22-11-22-27V51c0-15 7-27 22-27Z"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <path d="M60 26v20" fill="none" stroke="currentColor" {...STROKE} />
-      <rect x="55" y="38" width="10" height="16" rx="5" fill="#4F7CFF" />
+      <circle cx="8.2" cy="8.2" r="3.8" />
+      <path d="m10.8 10.8 8.2 8.2M16.4 16.4l-2 2M19 19l-2 2" />
     </>
   ),
-  bottle: (
+  bolsos: (
     <>
-      <rect
-        x="46"
-        y="44"
-        width="28"
-        height="60"
-        rx="13"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <rect x="53" y="20" width="14" height="24" rx="5" fill="currentColor" />
-      <path d="M47 62h26" fill="none" stroke="#4F7CFF" {...STROKE} />
+      <path d="M6.2 8.4h11.6a2 2 0 0 1 2 2v7.4a2 2 0 0 1-2 2H6.2a2 2 0 0 1-2-2v-7.4a2 2 0 0 1 2-2Z" />
+      <path d="M8.8 8.4V6.8a3.2 3.2 0 0 1 6.4 0v1.6M8.8 12.6h6.4" />
     </>
   ),
-  umbrella: (
+  ropa: (
     <>
-      <path
-        d="M18 74c0-30 19-50 42-50s42 20 42 50c-7-9-14-9-21 0-7-9-14-9-21 0-7-9-14-9-21 0-7-9-14-9-21 0Z"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <path d="M60 74v28" fill="none" stroke="currentColor" {...STROKE} />
-      <path
-        d="M60 102a8 8 0 0 0-8-8"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
+      <path d="M9 3.4 4.4 6l1.8 4 2-.9v11.5h7.6V9.1l2 .9 1.8-4L15 3.4" />
+      <path d="M9 3.4a3 3 0 0 0 6 0" />
     </>
   ),
-  glasses: (
+  accesorios: (
     <>
-      <rect
-        x="20"
-        y="54"
-        width="80"
-        height="30"
-        rx="15"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <path d="M21 69h78" fill="none" stroke="#4F7CFF" strokeWidth="4" strokeLinecap="round" />
-      <rect x="54" y="63" width="12" height="12" rx="4" fill="currentColor" />
+      <rect x="2.8" y="9" width="7.6" height="5.6" rx="2.4" />
+      <rect x="13.6" y="9" width="7.6" height="5.6" rx="2.4" />
+      <path d="M10.4 11.8h3.2M4.4 9 7.6 4.6M19.6 9 16.4 4.6" />
     </>
   ),
-  notebook: (
+  libros: (
     <>
-      <rect
-        x="32"
-        y="22"
-        width="56"
-        height="76"
-        rx="8"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <path d="M45 22v76" fill="none" stroke="currentColor" {...STROKE} />
-      <path
-        d="M58 44h18M58 59h18M58 74h11"
-        fill="none"
-        stroke="#4F7CFF"
-        {...STROKE}
-      />
+      <path d="M4 4.6h5.4A3.2 3.2 0 0 1 12 7.8v12a2.4 2.4 0 0 0-2.4-2.4H4z" />
+      <path d="M20 4.6h-5.4A3.2 3.2 0 0 0 12 7.8v12a2.4 2.4 0 0 1 2.4-2.4H20z" />
     </>
   ),
-  keys: (
+  otros: (
     <>
-      <circle
-        cx="34"
-        cy="42"
-        r="13"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
-      <path d="M43 51 76 84" fill="none" stroke="currentColor" {...STROKE} />
-      <path
-        d="M67 75l-8 8M72 80l-8 8"
-        fill="none"
-        stroke="currentColor"
-        {...STROKE}
-      />
+      <path d="M3.4 7.8 12 3.4l8.6 4.4v8.4L12 20.6 3.4 16.2z" />
+      <path d="M3.4 7.8 12 12.2l8.6-4.4M12 12.2v8.4" />
     </>
   ),
 };
 
-export function ObjectArt({
-  art,
+/** Ilustración de una categoría. */
+export function CategoryIcon({
+  category,
   className,
 }: {
-  art: ArtKey;
+  category: ObjectCategory;
   className?: string;
 }) {
   return (
-    <svg
-      viewBox="0 0 120 120"
-      className={className}
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      {ART[art]}
-    </svg>
+    <IconBase className={className}>{ART[category]}</IconBase>
   );
 }

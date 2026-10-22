@@ -42,13 +42,13 @@ export function FAQ() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   return (
-    <section id="faq" className="scroll-mt-24 bg-canvas py-20 sm:py-24">
-      <div className="mx-auto max-w-6xl px-5 sm:px-8">
+    <section id="faq" className="section bg-canvas">
+      <div className="container-page">
         <div className="grid gap-10 lg:grid-cols-[0.78fr_1.22fr] lg:gap-16">
           <Reveal>
             <div>
               <p className="eyebrow">
-                <span className="h-px w-8 bg-brand" aria-hidden="true" />
+                <span className="h-px w-8 bg-forest-600" aria-hidden="true" />
                 Preguntas frecuentes
               </p>
               <h2 className="mt-4 text-[1.85rem] font-semibold leading-[1.15] tracking-[-0.025em] text-ink sm:text-[2.35rem]">
@@ -86,7 +86,7 @@ export function FAQ() {
                           aria-hidden="true"
                           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line text-muted transition-transform duration-300 ${
                             isOpen
-                              ? "rotate-180 border-brand/40 bg-brand/10 text-brand-strong"
+                              ? "rotate-180 border-forest-300 bg-forest-50 text-forest-700"
                               : ""
                           }`}
                         >

@@ -2,35 +2,74 @@
 
 /* ==========================================================================
    FindIt Campus — Sistema visual
-   Paleta reducida, tipografía y ritmo de espaciado definidos aquí para que
-   todo el producto comparta la misma identidad.
+
+   Paleta de la identidad: verde oscuro como color principal (acciones y
+   superficies de marca), blanco como fondo, verde lima como acento
+   selectivo, gris cálido muy claro para fondos secundarios, gris oscuro
+   para texto secundario y tonos pastel para las etiquetas de estado.
+
+   Todos los valores viven como tokens aquí para que ninguna vista tenga que
+   repetir un color literal.
    ========================================================================== */
 
 @theme {
-  /* Paleta */
-  --color-night: #0b1020;
-  --color-brand: #4f7cff;
-  /* Tono más profundo del azul de marca: se usa solo para texto pequeño
-     sobre fondos claros, donde #4F7CFF no alcanza el contraste AA (4.5:1). */
-  --color-brand-strong: #2b4fc7;
-  --color-accent: #65e4ff;
-  --color-canvas: #f5f7fc;
-  --color-ink: #172033;
-  --color-muted: #667085;
-  --color-line: #e5e9f2;
+  /* Verde oscuro de marca ------------------------------------------------- */
+  --color-forest-50: #f1f6f3;
+  --color-forest-100: #dfeae4;
+  --color-forest-200: #bcd5c8;
+  --color-forest-300: #8fb7a6;
+  --color-forest-400: #5f9580;
+  --color-forest-500: #3d7760;
+  --color-forest-600: #2c5c4a;
+  --color-forest-700: #1f4739;
+  --color-forest-800: #16352b;
+  --color-forest-900: #0e241e;
+  --color-forest-950: #081713;
 
-  /* Tipografía */
+  /* Verde lima: acento selectivo ------------------------------------------ */
+  --color-lime-100: #effbd6;
+  --color-lime-200: #dff5ae;
+  --color-lime-300: #cdeb83;
+  --color-lime-400: #bcdf5c;
+  --color-lime-500: #a7ce3a;
+  --color-lime-600: #84a92a;
+  --color-lime-700: #63811d;
+
+  /* Neutros cálidos -------------------------------------------------------- */
+  --color-canvas: #f6f4f1;
+  --color-canvas-deep: #efece6;
+  --color-ink: #17211e;
+  --color-muted: #5e6a66;
+  --color-line: #e5e1da;
+  --color-line-strong: #d5cfc5;
+
+  /* Pasteles de estado ----------------------------------------------------- */
+  --color-lost-surface: #fbeae0;
+  --color-lost-text: #8a4526;
+  --color-found-surface: #e2f0e6;
+  --color-found-text: #1c563d;
+
+  /* Tipografía ------------------------------------------------------------- */
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
     monospace;
 
-  /* Sombras suaves: prefieres bordes delicados a sombras pesadas. */
-  --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04),
-    0 12px 32px -22px rgba(16, 24, 40, 0.22);
-  --shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.05),
-    0 26px 50px -28px rgba(16, 24, 40, 0.32);
-  --shadow-deep: 0 30px 70px -40px rgba(11, 16, 32, 0.55);
+  /* Radios ----------------------------------------------------------------- */
+  --radius-control: 0.875rem;
+  --radius-card: 1.25rem;
+  --radius-panel: 1.75rem;
+  --radius-hero: 2rem;
+
+  /* Sombras: discretas, nunca pesadas -------------------------------------- */
+  --shadow-soft: 0 1px 2px rgba(23, 33, 30, 0.04),
+    0 10px 30px -22px rgba(23, 33, 30, 0.28);
+  --shadow-lift: 0 2px 4px rgba(23, 33, 30, 0.05),
+    0 24px 48px -28px rgba(23, 33, 30, 0.32);
+  --shadow-deep: 0 28px 64px -36px rgba(14, 36, 30, 0.5);
+
+  /* Transiciones ------------------------------------------------------------ */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
@@ -41,7 +80,7 @@
 
   body {
     min-height: 100vh;
-    background-color: var(--color-canvas);
+    background-color: #fff;
     color: var(--color-ink);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -49,29 +88,68 @@
   }
 
   ::selection {
-    background-color: color-mix(in srgb, var(--color-brand) 22%, transparent);
+    background-color: color-mix(in srgb, var(--color-lime-300) 55%, transparent);
+    color: var(--color-forest-900);
   }
 
   /* Foco visible y coherente en toda la página. */
   :focus-visible {
-    outline: 2px solid var(--color-brand);
+    outline: 2px solid var(--color-forest-600);
     outline-offset: 3px;
-    border-radius: 6px;
+    border-radius: 8px;
   }
 
   /* Evita que el contenido se desplace bajo la navbar al navegar por anclas. */
   section[id] {
-    scroll-margin-top: 6.5rem;
+    scroll-margin-top: 6rem;
   }
 
-  /* El explorador usa un botón propio para limpiar la búsqueda. */
+  /* La búsqueda usa un botón propio para limpiar el campo. */
   input[type="search"]::-webkit-search-cancel-button {
     -webkit-appearance: none;
     appearance: none;
   }
+
+  /* Los controles de formulario heredan la tipografía del documento. */
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
 }
 
 @layer components {
+  /* Estructura ----------------------------------------------------------- */
+  .container-page {
+    width: 100%;
+    max-width: 78rem;
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+  }
+
+  @media (min-width: 640px) {
+    .container-page {
+      padding-inline: 2rem;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .container-page {
+      padding-inline: 2.5rem;
+    }
+  }
+
+  .section {
+    padding-block: 4.5rem;
+  }
+
+  @media (min-width: 640px) {
+    .section {
+      padding-block: 5.5rem;
+    }
+  }
+
   /* Botones ---------------------------------------------------------------- */
   .btn {
     display: inline-flex;
@@ -79,36 +157,50 @@
     justify-content: center;
     gap: 0.5rem;
     min-height: 3rem;
-    padding: 0 1.25rem;
-    border-radius: 0.75rem;
+    padding-inline: 1.35rem;
+    border-radius: var(--radius-control);
     font-size: 0.9375rem;
     font-weight: 550;
     line-height: 1;
     white-space: nowrap;
     transition:
-      background-color 180ms ease,
-      border-color 180ms ease,
-      color 180ms ease,
-      box-shadow 180ms ease,
-      transform 180ms ease;
+      background-color 180ms var(--ease-soft),
+      border-color 180ms var(--ease-soft),
+      color 180ms var(--ease-soft),
+      box-shadow 180ms var(--ease-soft),
+      transform 180ms var(--ease-soft);
   }
 
   .btn:active {
     transform: translateY(1px);
   }
 
-  /* El azul de marca (#4F7CFF) se reserva para acentos, trazos y textos
-     grandes. Las superficies solidas que llevan texto blanco usan el tono
-     profundo de la misma familia, que sí alcanza el contraste AA. */
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  /* Botón principal: verde oscuro de marca. */
   .btn-primary {
-    background-color: var(--color-brand-strong);
+    background-color: var(--color-forest-800);
     color: #fff;
-    box-shadow: 0 10px 24px -14px rgba(43, 79, 199, 0.9);
+    box-shadow: 0 12px 26px -16px rgba(22, 53, 43, 0.95);
   }
 
   .btn-primary:hover {
-    background-color: color-mix(in srgb, var(--color-brand-strong) 88%, #000);
-    box-shadow: 0 14px 30px -14px rgba(43, 79, 199, 0.95);
+    background-color: var(--color-forest-900);
+    box-shadow: 0 16px 32px -16px rgba(22, 53, 43, 1);
+  }
+
+  /* Botón de acento lima: solo sobre superficies oscuras o con texto oscuro. */
+  .btn-accent {
+    background-color: var(--color-lime-500);
+    color: var(--color-forest-950);
+    box-shadow: 0 12px 26px -16px rgba(130, 169, 42, 0.95);
+  }
+
+  .btn-accent:hover {
+    background-color: var(--color-lime-400);
   }
 
   .btn-secondary {
@@ -118,27 +210,26 @@
   }
 
   .btn-secondary:hover {
-    border-color: color-mix(in srgb, var(--color-brand) 45%, var(--color-line));
-    background-color: #fff;
-    box-shadow: var(--shadow-soft);
+    border-color: var(--color-forest-300);
+    background-color: var(--color-forest-50);
   }
 
   .btn-ghost-dark {
     background-color: transparent;
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.22);
   }
 
   .btn-ghost-dark:hover {
-    background-color: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.34);
+    background-color: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.4);
   }
 
   /* Superficies ------------------------------------------------------------ */
   .surface {
     background-color: #fff;
     border: 1px solid var(--color-line);
-    border-radius: 1rem;
+    border-radius: var(--radius-card);
   }
 
   /* Etiquetas -------------------------------------------------------------- */
@@ -150,14 +241,25 @@
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--color-brand-strong);
+    color: var(--color-forest-600);
+  }
+
+  /* Estados ---------------------------------------------------------------- */
+  .badge-perdido {
+    background-color: var(--color-lost-surface);
+    color: var(--color-lost-text);
+  }
+
+  .badge-encontrado {
+    background-color: var(--color-found-surface);
+    color: var(--color-found-text);
   }
 
   /* Revelado al entrar en el área visible ---------------------------------- */
   [data-reveal] {
     transition:
-      opacity 620ms cubic-bezier(0.22, 1, 0.36, 1),
-      transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+      opacity 620ms var(--ease-soft),
+      transform 620ms var(--ease-soft);
   }
 
   [data-reveal][data-state="hidden"] {
@@ -167,45 +269,36 @@
 
   /* Entrada del hero: puro CSS, no depende de JavaScript. ------------------- */
   .hero-in {
-    animation: hero-in 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: hero-in 720ms var(--ease-soft) both;
   }
 
   .hero-in-1 {
     animation-delay: 60ms;
   }
   .hero-in-2 {
-    animation-delay: 160ms;
+    animation-delay: 150ms;
   }
   .hero-in-3 {
-    animation-delay: 260ms;
+    animation-delay: 240ms;
   }
   .hero-in-4 {
-    animation-delay: 360ms;
+    animation-delay: 330ms;
   }
   .hero-in-5 {
-    animation-delay: 460ms;
-  }
-
-  /* Movimiento lento y discreto ------------------------------------------- */
-  .float-slow {
-    animation: float-y 8s ease-in-out infinite;
-  }
-
-  .float-slower {
-    animation: float-y 11s ease-in-out infinite;
+    animation-delay: 420ms;
   }
 
   /* Acordeón --------------------------------------------------------------- */
   .faq-panel {
-    animation: faq-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: faq-in 260ms var(--ease-soft) both;
   }
 
-  /* Panel de detalles ------------------------------------------------------ */
-  .modal-panel {
-    animation: modal-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Panel de filtros y diálogos -------------------------------------------- */
+  .panel-in {
+    animation: panel-in 240ms var(--ease-soft) both;
   }
 
-  .modal-panel::backdrop {
+  .panel-in::backdrop {
     animation: backdrop-in 220ms ease both;
   }
 }
@@ -221,16 +314,6 @@
   }
 }
 
-@keyframes float-y {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-9px);
-  }
-}
-
 @keyframes faq-in {
   from {
     opacity: 0;
@@ -242,10 +325,10 @@
   }
 }
 
-@keyframes modal-in {
+@keyframes panel-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.98);
+    transform: translateY(12px) scale(0.985);
   }
   to {
     opacity: 1;

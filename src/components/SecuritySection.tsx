@@ -30,13 +30,13 @@ const PRINCIPLES = [
 
 export function SecuritySection() {
   return (
-    <section id="confianza" className="scroll-mt-24 bg-white py-20 sm:py-24">
-      <div className="mx-auto max-w-6xl px-5 sm:px-8">
+    <section id="confianza" className="section bg-white">
+      <div className="container-page">
         <div className="grid gap-10 lg:grid-cols-[0.85fr_1.15fr] lg:items-end lg:gap-16">
           <Reveal>
             <div>
               <p className="eyebrow">
-                <span className="h-px w-8 bg-brand" aria-hidden="true" />
+                <span className="h-px w-8 bg-forest-600" aria-hidden="true" />
                 Confianza y seguridad
               </p>
               <h2 className="mt-4 text-[1.85rem] font-semibold leading-[1.15] tracking-[-0.025em] text-ink sm:text-[2.35rem]">
@@ -58,9 +58,9 @@ export function SecuritySection() {
                 return (
                   <li
                     key={principle.title}
-                    className="group rounded-2xl border border-line bg-canvas p-5 transition-[transform,border-color,background-color] duration-300 hover:-translate-y-0.5 hover:border-brand/30 hover:bg-white"
+                    className="group rounded-2xl border border-line bg-canvas p-5 transition-[transform,border-color,background-color] duration-300 hover:-translate-y-0.5 hover:border-forest-200 hover:bg-white"
                   >
-                    <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand/10 text-brand-strong transition-colors duration-300 group-hover:bg-brand">
+                    <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-forest-50 text-forest-700 transition-colors duration-300 group-hover:bg-forest-800 group-hover:text-white">
                       <Icon className="h-5 w-5" />
                     </span>
                     <h3 className="mt-4 text-[15.5px] font-semibold tracking-[-0.01em] text-ink">
@@ -77,7 +77,7 @@ export function SecuritySection() {
         </div>
 
         <p className="mt-10 flex items-start gap-2.5 text-[12.5px] leading-relaxed text-muted">
-          <IconInfo className="mt-0.5 h-4 w-4 shrink-0 text-brand-strong" />
+          <IconInfo className="mt-0.5 h-4 w-4 shrink-0 text-forest-600" />
           <span>
             Esta interfaz es una demostración de un producto en desarrollo. Los
             mecanismos descritos corresponden al modelo previsto: todavía no

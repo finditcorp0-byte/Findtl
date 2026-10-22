@@ -18,14 +18,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FindIt Campus | Recupera lo que importa",
+  title: {
+    default: "FindIt Campus | Recupera lo que perdiste en tu campus",
+    template: "%s | FindIt Campus",
+  },
   description:
-    "Una plataforma institucional para registrar, encontrar y recuperar objetos perdidos de forma organizada y segura.",
+    "FindIt Campus es la plataforma institucional para registrar, encontrar y recuperar objetos perdidos en tu campus, con custodia centralizada y trazabilidad.",
   applicationName: "FindIt Campus",
+  keywords: [
+    "objetos perdidos",
+    "campus",
+    "universidad",
+    "Cartagena",
+    "recuperar objetos",
+  ],
   openGraph: {
-    title: "FindIt Campus | Recupera lo que importa",
+    title: "FindIt Campus | Recupera lo que perdiste en tu campus",
     description:
-      "Una plataforma institucional para registrar, encontrar y recuperar objetos perdidos de forma organizada y segura.",
+      "La plataforma institucional para registrar, encontrar y recuperar objetos perdidos en tu campus, con custodia centralizada y trazabilidad.",
     siteName: "FindIt Campus",
     locale: "es_CO",
     type: "website",

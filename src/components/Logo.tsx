@@ -3,8 +3,8 @@
  *
  * El símbolo es un pin de localización abstracto que contiene un rombo
  * geométrico: la referencia al objeto recuperado dentro del lugar donde se
- * custodia. Es deliberadamente simple para poder reutilizarse como favicon
- * o en materiales impressos.
+ * custodia. El rombo usa el verde lima de acento sobre el verde oscuro de
+ * marca, el mismo contraste que se usa en las superficies destacadas.
  */
 
 export function BrandMark({ className = "h-9 w-9" }: { className?: string }) {
@@ -17,9 +17,9 @@ export function BrandMark({ className = "h-9 w-9" }: { className?: string }) {
     >
       <path
         d="M16 2.4c-4.83 0-8.75 3.92-8.75 8.75 0 6.42 7.42 12.9 7.74 13.16a1.36 1.36 0 0 0 1.93 0c.32-.26 7.83-6.74 7.83-13.16 0-4.83-3.92-8.75-8.75-8.75Z"
-        fill="#4F7CFF"
+        fill="#16352B"
       />
-      <path d="M16 8.05 20.25 12 16 15.95 11.75 12 16 8.05Z" fill="#FFFFFF" />
+      <path d="M16 8.05 20.25 12 16 15.95 11.75 12 16 8.05Z" fill="#BCDF5C" />
     </svg>
   );
 }
@@ -45,8 +45,8 @@ export function Logo({
         {/* El espacio mantiene el nombre accesible completo ("FindIt Campus"). */}
         {" "}
         <span
-          className={`mt-[3px] text-[9.5px] font-medium uppercase tracking-[0.2em] ${
-            tone === "dark" ? "text-white/55" : "text-muted"
+          className={`mt-[3px] text-[9.5px] font-semibold uppercase tracking-[0.22em] ${
+            tone === "dark" ? "text-lime-400" : "text-forest-600"
           }`}
         >
           Campus

@@ -32,15 +32,12 @@ const STEPS = [
 
 export function HowItWorks() {
   return (
-    <section
-      id="como-funciona"
-      className="scroll-mt-24 bg-canvas py-20 sm:py-24"
-    >
-      <div className="mx-auto max-w-6xl px-5 sm:px-8">
+    <section id="como-funciona" className="section bg-canvas">
+      <div className="container-page">
         <Reveal>
           <div className="max-w-2xl">
             <p className="eyebrow">
-              <span className="h-px w-8 bg-brand" aria-hidden="true" />
+              <span className="h-px w-8 bg-forest-600" aria-hidden="true" />
               Cómo funciona
             </p>
             <h2 className="mt-4 text-[1.85rem] font-semibold leading-[1.15] tracking-[-0.025em] text-ink sm:text-[2.35rem]">
@@ -75,7 +72,7 @@ export function HowItWorks() {
                     </>
                   )}
 
-                  <span className="relative z-10 flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-line bg-white text-brand-strong shadow-soft">
+                  <span className="relative z-10 flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-line bg-white text-forest-700 shadow-soft">
                     <Icon className="h-6 w-6" />
                   </span>
 
@@ -98,7 +95,7 @@ export function HowItWorks() {
 
         <Reveal>
           <p className="mt-12 flex items-start gap-2.5 rounded-2xl border border-line bg-white px-4 py-3.5 text-[13px] leading-relaxed text-muted">
-            <IconInfo className="mt-0.5 h-4 w-4 shrink-0 text-brand-strong" />
+            <IconInfo className="mt-0.5 h-4 w-4 shrink-0 text-forest-600" />
             <span>
               La entrega entre estudiantes no está permitida dentro del flujo
               propuesto: toda entrega se realiza desde el punto de custodia y con
