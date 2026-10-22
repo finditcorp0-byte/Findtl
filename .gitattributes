@@ -1,0 +1,27 @@
+# Normalización de finales de línea
+# Todo el texto se almacena en LF en el repositorio y se materializa en LF
+# en el árbol de trabajo, independientemente del sistema operativo.
+* text=auto eol=lf
+
+# Excepciones: los scripts de Windows requieren CRLF para ejecutarse.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Archivos binarios: nunca deben ser normalizados.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.svg text eol=lf
+*.pdf binary
+*.zip binary
+*.gz binary
+*.mp4 binary
+*.webm binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
