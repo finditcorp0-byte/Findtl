@@ -1,26 +1,279 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ==========================================================================
+   FindIt Campus — Sistema visual
+   Paleta reducida, tipografía y ritmo de espaciado definidos aquí para que
+   todo el producto comparta la misma identidad.
+   ========================================================================== */
+
+@theme {
+  /* Paleta */
+  --color-night: #0b1020;
+  --color-brand: #4f7cff;
+  /* Tono más profundo del azul de marca: se usa solo para texto pequeño
+     sobre fondos claros, donde #4F7CFF no alcanza el contraste AA (4.5:1). */
+  --color-brand-strong: #2b4fc7;
+  --color-accent: #65e4ff;
+  --color-canvas: #f5f7fc;
+  --color-ink: #172033;
+  --color-muted: #667085;
+  --color-line: #e5e9f2;
+
+  /* Tipografía */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+
+  /* Sombras suaves: prefieres bordes delicados a sombras pesadas. */
+  --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04),
+    0 12px 32px -22px rgba(16, 24, 40, 0.22);
+  --shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.05),
+    0 26px 50px -28px rgba(16, 24, 40, 0.32);
+  --shadow-deep: 0 30px 70px -40px rgba(11, 16, 32, 0.55);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  body {
+    min-height: 100vh;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-brand) 22%, transparent);
+  }
+
+  /* Foco visible y coherente en toda la página. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+
+  /* Evita que el contenido se desplace bajo la navbar al navegar por anclas. */
+  section[id] {
+    scroll-margin-top: 6.5rem;
+  }
+
+  /* El explorador usa un botón propio para limpiar la búsqueda. */
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Botones ---------------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 3rem;
+    padding: 0 1.25rem;
+    border-radius: 0.75rem;
+    font-size: 0.9375rem;
+    font-weight: 550;
+    line-height: 1;
+    white-space: nowrap;
+    transition:
+      background-color 180ms ease,
+      border-color 180ms ease,
+      color 180ms ease,
+      box-shadow 180ms ease,
+      transform 180ms ease;
+  }
+
+  .btn:active {
+    transform: translateY(1px);
+  }
+
+  /* El azul de marca (#4F7CFF) se reserva para acentos, trazos y textos
+     grandes. Las superficies solidas que llevan texto blanco usan el tono
+     profundo de la misma familia, que sí alcanza el contraste AA. */
+  .btn-primary {
+    background-color: var(--color-brand-strong);
+    color: #fff;
+    box-shadow: 0 10px 24px -14px rgba(43, 79, 199, 0.9);
+  }
+
+  .btn-primary:hover {
+    background-color: color-mix(in srgb, var(--color-brand-strong) 88%, #000);
+    box-shadow: 0 14px 30px -14px rgba(43, 79, 199, 0.95);
+  }
+
+  .btn-secondary {
+    background-color: #fff;
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+  }
+
+  .btn-secondary:hover {
+    border-color: color-mix(in srgb, var(--color-brand) 45%, var(--color-line));
+    background-color: #fff;
+    box-shadow: var(--shadow-soft);
+  }
+
+  .btn-ghost-dark {
+    background-color: transparent;
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+  }
+
+  .btn-ghost-dark:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.34);
+  }
+
+  /* Superficies ------------------------------------------------------------ */
+  .surface {
+    background-color: #fff;
+    border: 1px solid var(--color-line);
+    border-radius: 1rem;
+  }
+
+  /* Etiquetas -------------------------------------------------------------- */
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-brand-strong);
+  }
+
+  /* Revelado al entrar en el área visible ---------------------------------- */
+  [data-reveal] {
+    transition:
+      opacity 620ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  [data-reveal][data-state="hidden"] {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  /* Entrada del hero: puro CSS, no depende de JavaScript. ------------------- */
+  .hero-in {
+    animation: hero-in 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .hero-in-1 {
+    animation-delay: 60ms;
+  }
+  .hero-in-2 {
+    animation-delay: 160ms;
+  }
+  .hero-in-3 {
+    animation-delay: 260ms;
+  }
+  .hero-in-4 {
+    animation-delay: 360ms;
+  }
+  .hero-in-5 {
+    animation-delay: 460ms;
+  }
+
+  /* Movimiento lento y discreto ------------------------------------------- */
+  .float-slow {
+    animation: float-y 8s ease-in-out infinite;
+  }
+
+  .float-slower {
+    animation: float-y 11s ease-in-out infinite;
+  }
+
+  /* Acordeón --------------------------------------------------------------- */
+  .faq-panel {
+    animation: faq-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Panel de detalles ------------------------------------------------------ */
+  .modal-panel {
+    animation: modal-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .modal-panel::backdrop {
+    animation: backdrop-in 220ms ease both;
+  }
+}
+
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes float-y {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+
+@keyframes faq-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Respeta la preferencia del sistema: sin movimiento no hay animación. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
