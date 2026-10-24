@@ -7,12 +7,36 @@ import { Footer } from "@/components/Footer";
 import { Hero } from "@/components/Hero";
 import { HowItWorks } from "@/components/HowItWorks";
 import { Navbar } from "@/components/Navbar";
+import { ObjectCategory } from "@/lib/demo-objects";
 import { QuickBenefits } from "@/components/QuickBenefits";
 import { RecentObjects } from "@/components/RecentObjects";
 import { SecuritySection } from "@/components/SecuritySection";
-import { categoryCounts } from "@/lib/demo-objects";
+import { getCategoriesWithCounts, getRecentObjects } from "@/lib/supabase/queries";
 
-export default function Home() {
+export default async function Home() {
+  const [recentObjects, categoriesWithCountsArray] = await Promise.all([
+    getRecentObjects(6),
+    getCategoriesWithCounts(),
+  ]);
+
+  // Convertir array a Record<ObjectCategory, number> para CategoryGrid
+  const categoryCountsRecord: Record<ObjectCategory, number> = {
+    electronicos: 0,
+    documentos: 0,
+    llaves: 0,
+    bolsos: 0,
+    ropa: 0,
+    accesorios: 0,
+    libros: 0,
+    otros: 0,
+  };
+
+  categoriesWithCountsArray.forEach((cat) => {
+    if (cat.slug in categoryCountsRecord) {
+      categoryCountsRecord[cat.slug as ObjectCategory] = cat.count;
+    }
+  });
+
   return (
     <>
       <a
@@ -27,8 +51,8 @@ export default function Home() {
       <main id="contenido">
         <Hero />
         <QuickBenefits />
-        <CategoryGrid counts={categoryCounts()} />
-        <RecentObjects />
+        <CategoryGrid counts={categoryCountsRecord} />
+        <RecentObjects objects={recentObjects} />
         <ClosingBanner />
         <AboutSection />
         <HowItWorks />

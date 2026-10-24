@@ -11,30 +11,18 @@ import {
   IconTag,
 } from "@/components/icons";
 import { Navbar } from "@/components/Navbar";
-import { ObjectActions } from "@/components/ObjectActions";
-import { ObjectCard } from "@/components/ObjectCard";
 import { ObjectGallery } from "@/components/ObjectGallery";
-import {
-  CATEGORY_LABELS,
-  DEMO_OBJECTS,
-  KIND_LABELS,
-  campusName,
-  findDemoObject,
-  formatAge,
-  formatDate,
-} from "@/lib/demo-objects";
+import { ClaimModalTrigger } from "@/components/ClaimModalWrapper/ClaimModalWrapper";
+import { getObjectById } from "@/lib/supabase/queries";
+import { createClient } from "@/lib/supabase/server";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export function generateStaticParams() {
-  return DEMO_OBJECTS.map((object) => ({ id: object.id }));
-}
-
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
-  const object = findDemoObject(id);
+  const object = await getObjectById(id);
 
   if (!object) {
     return {
@@ -54,37 +42,45 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
+export async function generateStaticParams() {
+  // No generamos rutas estáticas para datos dinámicos
+  return [];
+}
+
 export default async function DetalleObjetoPage({ params }: PageProps) {
   const { id } = await params;
-  const object = findDemoObject(id);
+  const object = await getObjectById(id);
 
   if (!object) notFound();
 
+  // Verificar si hay usuario autenticado
+  const supabase = await createClient();
+  await supabase.auth.getUser();
+  
   const isPerdido = object.kind === "perdido";
-  const related = DEMO_OBJECTS.filter(
-    (candidate) => candidate.category === object.category && candidate.id !== object.id,
-  ).slice(0, 3);
 
   const facts = [
     {
       icon: IconPin,
       label: "Zona",
-      value: object.zone,
+      value: object.zone ?? "—",
     },
     {
       icon: IconTag,
       label: "Ubicación exacta",
-      value: object.location,
+      value: object.location ?? "—",
     },
     {
       icon: IconCalendar,
       label: "Publicado",
-      value: `${formatDate(object.publishedOn)} · ${formatAge(object.daysAgo)}`,
+      value: object.publishedOn
+        ? `${object.publishedOn} · ${object.daysAgo === 0 ? "Hoy" : object.daysAgo === 1 ? "Ayer" : `Hace ${object.daysAgo} días`}`
+        : "—",
     },
     {
       icon: IconShield,
       label: "Punto de custodia",
-      value: object.custodyPoint,
+      value: object.custodyPoint ?? "—",
     },
   ];
 
@@ -118,11 +114,11 @@ export default async function DetalleObjetoPage({ params }: PageProps) {
                       isPerdido ? "bg-lost-text" : "bg-found-text"
                     }`}
                   />
-                  {KIND_LABELS[object.kind]}
+                  {object.kind === "perdido" ? "Perdido" : "Encontrado"}
                 </span>
 
                 <span className="rounded-full border border-line bg-white px-3 py-1 text-[12px] font-medium text-muted">
-                  {CATEGORY_LABELS[object.category]}
+                  {object.category}
                 </span>
               </div>
 
@@ -155,37 +151,21 @@ export default async function DetalleObjetoPage({ params }: PageProps) {
               </dl>
 
               <div className="mt-8">
-                <ObjectActions object={object} />
+                <ClaimModalTrigger
+                  objectId={object.id}
+                  objectKind={object.kind === "perdido" ? "perdido" : "encontrado"}
+                />
               </div>
 
               <p className="mt-8 rounded-2xl border border-line bg-canvas px-4 py-3.5 text-[12.5px] leading-relaxed text-muted">
-                <strong className="font-semibold text-ink">Registro de demostración.</strong>{" "}
-                Este objeto y sus datos son ficticios. La institución, el
-                expediente <span className="font-medium text-ink">{object.reference}</span> y
-                el punto de custodia <span className="font-medium text-ink">{campusName(object.campus)}</span>{" "}
-                forman parte del contenido de ejemplo del producto.
+                <strong className="font-semibold text-ink">Registro público.</strong>{" "}
+                Este objeto está publicado en el catálogo oficial. El expediente
+                <span className="font-medium text-ink">{object.reference}</span> y
+                el punto de custodia <span className="font-medium text-ink">{object.campusName}</span>{" "}
+                forman parte del registro institucional.
               </p>
             </div>
           </div>
-
-          {related.length > 0 && (
-            <section className="mt-20" aria-labelledby="relacionados-titulo">
-              <h2
-                id="relacionados-titulo"
-                className="text-[1.35rem] font-semibold tracking-[-0.02em] text-ink"
-              >
-                Objetos de la misma categoría
-              </h2>
-
-              <ul className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                {related.map((candidate) => (
-                  <li key={candidate.id}>
-                    <ObjectCard object={candidate} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
         </div>
       </main>
 

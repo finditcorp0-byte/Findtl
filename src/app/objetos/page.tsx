@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { CatalogView } from "@/components/CatalogView";
 import { Footer } from "@/components/Footer";
 import { Navbar } from "@/components/Navbar";
-import { DEMO_OBJECTS } from "@/lib/demo-objects";
+import { getObjects } from "@/lib/supabase/queries";
 
 export const metadata: Metadata = {
   title: "Catálogo de objetos",
@@ -46,14 +46,16 @@ function CatalogSkeleton() {
   );
 }
 
-export default function ObjetosPage() {
+export default async function ObjetosPage() {
+  const objects = await getObjects();
+
   return (
     <>
       <Navbar />
 
       <main id="contenido">
         <Suspense fallback={<CatalogSkeleton />}>
-          <CatalogView objects={DEMO_OBJECTS} />
+          <CatalogView objects={objects} />
         </Suspense>
       </main>
 

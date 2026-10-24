@@ -1,0 +1,3950 @@
+﻿
+========== 001_init_institutions.sql ==========
+
+-- MigraciÃ³n 001: Instituciones y sedes
+-- PropÃ³sito: crear la base organizacional multiinstitucional.
+-- Dependencias: ninguna.
+-- Riesgos: bajo.
+-- ReversiÃ³n: DROP TABLE campuses; DROP TABLE institutions; (solo si no hay datos).
+
+-- ExtensiÃ³n requerida para gen_random_uuid() y digest()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE institutions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  legal_name text,
+  city text,
+  country text NOT NULL DEFAULT 'CO',
+  email_domain text UNIQUE,
+  logo_url text,
+  settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE campuses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  address text,
+  city text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_institutions_is_active ON institutions(is_active);
+CREATE INDEX idx_institutions_email_domain ON institutions(email_domain);
+CREATE INDEX idx_campuses_institution_id ON campuses(institution_id);
+CREATE INDEX idx_campuses_is_active ON campuses(is_active);
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE institutions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE campuses ENABLE ROW LEVEL SECURITY;
+
+-- institutions: lectura pÃºblica de instituciones activas.
+-- Escritura (INSERT/UPDATE/DELETE): no hay polÃ­tica directa para clientes.
+-- RLS deniega por defecto toda escritura directa desde el cliente.
+-- Las escrituras autorizadas ocurren Ãºnicamente mediante funciones SECURITY DEFINER
+-- creadas en migraciones posteriores.
+CREATE POLICY institutions_select_public ON institutions
+  FOR SELECT TO anon, authenticated
+  USING (is_active = true);
+
+-- campuses: lectura de sedes activas de instituciones activas.
+-- Escritura (INSERT/UPDATE/DELETE): no hay polÃ­tica directa para clientes.
+CREATE POLICY campuses_select_public ON campuses
+  FOR SELECT TO anon, authenticated
+  USING (
+    is_active = true
+    AND EXISTS (
+      SELECT 1 FROM institutions i
+      WHERE i.id = campuses.institution_id AND i.is_active = true
+    )
+  );
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 1.1: Se puede crear una instituciÃ³n (vÃ­a funciÃ³n de servidor, no directamente)
+-- SELECT * FROM institutions WHERE name = 'Universidad de Prueba';
+
+-- Prueba 1.2: email_domain es Ãºnico
+-- INSERT INTO institutions (name, email_domain) VALUES ('Dup', 'dup.test');
+-- INSERT INTO institutions (name, email_domain) VALUES ('Dup2', 'dup.test'); -- Debe fallar (UNIQUE)
+
+-- Prueba 1.3: Visitante no puede insertar instituciones directamente (RLS deniega)
+-- INSERT INTO institutions (name) VALUES ('Intruso'); -- Debe fallar con RLS
+
+-- Prueba 1.4: Visitante lee solo instituciones activas
+-- SELECT id, name FROM institutions WHERE is_active = true; -- Funciona para anon
+
+========== 002_profiles_memberships.sql ==========
+
+-- MigraciÃ³n 002: Perfiles, membresÃ­as y roles
+-- PropÃ³sito: vincular usuarios autenticados a instituciones con roles.
+-- Dependencias: 001 (instituciones).
+-- Riesgos: medio. El campo id de profiles debe coincidir con auth.users.id.
+-- ReversiÃ³n: DROP TABLE memberships; DROP TABLE profiles_private; DROP TABLE profiles;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE profiles (
+  id uuid PRIMARY KEY,
+  full_name text,
+  avatar_url text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE profiles_private (
+  profile_id uuid PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+  email text NOT NULL,
+  phone text,
+  document_type text,
+  document_number text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE memberships (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES profiles(id),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  campus_id uuid REFERENCES campuses(id),
+  role text NOT NULL CHECK (role IN ('student', 'custody_staff', 'reviewer', 'institution_admin')),
+  is_primary boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_profiles_is_active ON profiles(is_active);
+CREATE INDEX idx_profiles_private_profile_id ON profiles_private(profile_id);
+CREATE INDEX idx_memberships_profile_id ON memberships(profile_id);
+CREATE INDEX idx_memberships_institution_id ON memberships(institution_id);
+CREATE INDEX idx_memberships_campus_id ON memberships(campus_id);
+CREATE INDEX idx_memberships_role ON memberships(role);
+CREATE INDEX idx_memberships_is_active ON memberships(is_active);
+
+-- Restricciones de unicidad parciales (M-2):
+-- PostgreSQL permite mÃºltiples NULL en columnas Ãºnicas, por tanto se usan
+-- dos Ã­ndices parciales para evitar duplicidad de membresÃ­as.
+CREATE UNIQUE INDEX idx_memberships_unique_no_campus
+  ON memberships(profile_id, institution_id)
+  WHERE campus_id IS NULL;
+
+CREATE UNIQUE INDEX idx_memberships_unique_with_campus
+  ON memberships(profile_id, institution_id, campus_id)
+  WHERE campus_id IS NOT NULL;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles_private ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
+
+-- profiles: lectura de propio perfil y campos pÃºblicos de miembros de la misma instituciÃ³n.
+CREATE POLICY profiles_select_own ON profiles
+  FOR SELECT TO authenticated
+  USING (auth.uid() = id);
+
+CREATE POLICY profiles_select_public_fields ON profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m1
+      WHERE m1.profile_id = auth.uid() AND m1.is_active = true
+    )
+    AND EXISTS (
+      SELECT 1 FROM memberships m2
+      WHERE m2.profile_id = profiles.id AND m2.is_active = true
+      AND m1.institution_id = m2.institution_id
+    )
+  );
+
+CREATE POLICY profiles_update_own ON profiles
+  FOR UPDATE TO authenticated
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
+
+-- profiles_private: solo el propio perfil puede leer/escribir sus datos privados.
+CREATE POLICY profiles_private_select_own ON profiles_private
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id);
+
+CREATE POLICY profiles_private_update_own ON profiles_private
+  FOR UPDATE TO authenticated
+  USING (auth.uid() = profile_id)
+  WITH CHECK (auth.uid() = profile_id);
+
+-- memberships: lectura de propias membresÃ­as y de membresÃ­as de la misma instituciÃ³n (admin).
+CREATE POLICY memberships_select_own ON memberships
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id);
+
+CREATE POLICY memberships_select_institution_admin ON memberships
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m_admin
+      WHERE m_admin.profile_id = auth.uid()
+        AND m_admin.institution_id = memberships.institution_id
+        AND m_admin.role = 'institution_admin'
+        AND m_admin.is_active = true
+    )
+  );
+
+-- memberships: escritura (INSERT/UPDATE/DELETE) solo vÃ­a funciÃ³n de servidor.
+-- No hay polÃ­tica directa para clientes; RLS deniega por defecto.
+-- La funciÃ³n fn_create_membership valida membresÃ­a activa y rol antes de escribir.
+-- La funciÃ³n fn_deactivate_user desactiva perfiles y membresÃ­as de forma explÃ­cita.
+
+-- ============================================================
+-- SincronizaciÃ³n auth.users â†’ profiles
+-- ============================================================
+
+-- FunciÃ³n de servidor: crea perfil en profiles y profiles_private al registrarse un usuario en auth.
+-- No reactiva automÃ¡ticamente cuentas desactivadas previas; usa ON CONFLICT DO NOTHING
+-- para no sobrescribir un perfil existente con is_active = false.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, avatar_url, is_active)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', NULL),
+    COALESCE(NEW.raw_user_meta_data->>'avatar_url', NULL),
+    true
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO public.profiles_private (profile_id, email)
+  VALUES (NEW.id, NEW.email)
+  ON CONFLICT (profile_id) DO NOTHING;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: despuÃ©s de insertar un usuario en auth.users, crear su perfil.
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ============================================================
+-- DesactivaciÃ³n explÃ­cita de usuarios y membresÃ­as
+-- ============================================================
+
+-- FunciÃ³n de servidor: desactiva un perfil y sus membresÃ­as activas.
+-- Solo puede ser llamada por institution_admin de la misma instituciÃ³n que el perfil
+-- (desactiva solo las membresÃ­as de esa instituciÃ³n), o por platform_admin
+-- (desactivaciÃ³n global). No reactiva automÃ¡ticamente cuentas deshabilitadas.
+CREATE OR REPLACE FUNCTION public.fn_deactivate_user(
+  p_profile_id uuid
+) RETURNS void AS $$
+DECLARE
+  v_actor_institution_id uuid;
+  v_actor_role text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  ORDER BY CASE m.role WHEN 'platform_admin' THEN 0 WHEN 'institution_admin' THEN 1 ELSE 2 END
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- platform_admin puede desactivar globalmente; institution_admin solo en su instituciÃ³n
+  IF v_actor_role <> 'platform_admin' THEN
+    -- Verificar que el perfil objetivo tenga una membresÃ­a activa en la instituciÃ³n del actor
+    IF NOT EXISTS (
+      SELECT 1 FROM memberships m2
+      WHERE m2.profile_id = p_profile_id
+        AND m2.institution_id = v_actor_institution_id
+        AND m2.is_active = true
+    ) THEN
+      RAISE EXCEPTION 'El perfil no pertenece a la instituciÃ³n del actor';
+    END IF;
+
+    -- Desactivar solo las membresÃ­as del perfil dentro de la instituciÃ³n del actor
+    UPDATE public.memberships
+    SET is_active = false, updated_at = now()
+    WHERE profile_id = p_profile_id
+      AND institution_id = v_actor_institution_id;
+
+    -- Desactivar el perfil solo si no le quedan membresÃ­as activas en ninguna instituciÃ³n
+    IF NOT EXISTS (
+      SELECT 1 FROM memberships m3
+      WHERE m3.profile_id = p_profile_id AND m3.is_active = true
+    ) THEN
+      UPDATE public.profiles
+      SET is_active = false, updated_at = now()
+      WHERE id = p_profile_id;
+    END IF;
+  ELSE
+    -- platform_admin: desactivaciÃ³n global del perfil y todas sus membresÃ­as
+    UPDATE public.profiles
+    SET is_active = false, updated_at = now()
+    WHERE id = p_profile_id;
+
+    UPDATE public.memberships
+    SET is_active = false, updated_at = now()
+    WHERE profile_id = p_profile_id;
+  END IF;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_actor_institution_id, auth.uid(), 'user.deactivate',
+    'profile', p_profile_id::text,
+    jsonb_build_object('scope', v_actor_role),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_deactivate_user(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_deactivate_user(uuid) TO authenticated;
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 2.1: Un perfil puede tener membresÃ­as en varias instituciones con distintos roles.
+-- (Insertar dos membresÃ­as para el mismo profile_id con institution_id distintos)
+
+-- Prueba 2.2: No se permite auto-asignaciÃ³n de institution_admin.
+-- (Intentar INSERT en memberships con role='institution_admin' desde un cliente sin rol admin -- debe fallar)
+
+-- Prueba 2.3: Un usuario desactivado mediante fn_deactivate_user tiene is_active = false en profiles y memberships.
+-- (Ejecutar SELECT public.fn_deactivate_user('uuid'); verificar que profiles.is_active = false y memberships.is_active = false)
+
+-- Prueba 2.4: Un usuario no puede leer profiles_private de otro usuario.
+-- (SELECT * FROM profiles_private WHERE profile_id != auth.uid() -- debe devolver 0 filas)
+
+-- Prueba 2.5: RestricciÃ³n de unicidad parcial de membresÃ­as.
+-- (Intentar crear dos membresÃ­as con campus_id NULL para el mismo profile_id + institution_id -- debe fallar)
+
+-- Prueba 2.6: Un institution_admin de instituciÃ³n A no puede desactivar un perfil de instituciÃ³n B.
+-- (Ejecutar fn_deactivate_user con profile_id de instituciÃ³n B desde actor de instituciÃ³n A -- debe fallar)
+
+========== 003_categories_objects.sql ==========
+
+-- MigraciÃ³n 003: CategorÃ­as y objetos
+-- PropÃ³sito: definir catÃ¡logo de categorÃ­as y el registro central de objetos perdidos/encontrados.
+-- Dependencias: 001 (instituciones), 002 (profiles para reporter_id).
+-- Riesgos: medio. El Ã­ndice GIN de texto en espaÃ±ol requiere la extensiÃ³n de bÃºsqueda de texto de PostgreSQL (disponible por defecto).
+-- ReversiÃ³n: DROP TABLE object_files; DROP TABLE objects; DROP TABLE categories;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE categories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid REFERENCES institutions(id) ON DELETE RESTRICT,
+  name text NOT NULL,
+  slug text NOT NULL,
+  description text,
+  sort_order integer,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- RestricciÃ³n Ãºnica: (institution_id, slug). Las categorÃ­as globales (institution_id IS NULL)
+-- comparten espacio de slugs; las de una instituciÃ³n son independientes.
+CREATE UNIQUE INDEX idx_categories_unique_slug ON categories(institution_id, slug);
+
+CREATE TABLE objects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  campus_id uuid,
+  category_id uuid REFERENCES categories(id),
+  reporter_id uuid NOT NULL REFERENCES profiles(id),
+  kind text NOT NULL CHECK (kind IN ('lost', 'found')),
+  title text NOT NULL,
+  description text NOT NULL,
+  zone text,
+  location text,
+  reported_at timestamptz NOT NULL DEFAULT now(),
+  state text NOT NULL CHECK (
+    kind IN ('lost', 'found') AND state IN (
+      'reported', 'under_review', 'in_custody', 'published', 'claimed',
+      'approved', 'delivery_prepared', 'delivered', 'closed', 'rejected', 'unclaimed'
+    )
+  ),
+  custody_point text,
+  reference_code text NOT NULL,
+  custody_received_at timestamptz,
+  custody_received_by uuid REFERENCES profiles(id),
+  published_at timestamptz,
+  published_by uuid REFERENCES profiles(id),
+  closed_at timestamptz,
+  closed_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Clave forÃ¡nea compuesta (C-1): cuando campus_id no es nulo, la sede debe pertenecer
+-- a la misma instituciÃ³n que el objeto. PostgreSQL soporta FK compuestas:
+-- (campus_id, institution_id) â†’ campuses(id, institution_id).
+-- Como campuses.id es PK, (id, institution_id) es automÃ¡ticamente Ãºnica.
+CREATE INDEX idx_campuses_id_institution_id ON campuses(id, institution_id);
+
+ALTER TABLE objects
+  ADD CONSTRAINT fk_objects_campus_institution
+  FOREIGN KEY (campus_id, institution_id)
+  REFERENCES campuses(id, institution_id);
+
+-- RestricciÃ³n Ãºnica: reference_code dentro de cada instituciÃ³n.
+CREATE UNIQUE INDEX idx_objects_unique_reference_code
+  ON objects(institution_id, reference_code);
+
+CREATE TABLE object_files (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+  storage_path text NOT NULL,
+  url text,
+  mime_type text NOT NULL,
+  file_size integer,
+  is_cover boolean NOT NULL DEFAULT false,
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  uploaded_by uuid REFERENCES profiles(id)
+);
+
+-- Una sola portada por objeto.
+CREATE UNIQUE INDEX idx_object_files_unique_cover
+  ON object_files(object_id)
+  WHERE is_cover = true;
+
+-- Ãndices
+CREATE INDEX idx_objects_institution_id ON objects(institution_id);
+CREATE INDEX idx_objects_state ON objects(state);
+CREATE INDEX idx_objects_kind ON objects(kind);
+CREATE INDEX idx_objects_reference_code ON objects(reference_code);
+CREATE INDEX idx_objects_composite_institution_state ON objects(institution_id, state);
+CREATE INDEX idx_object_files_object_id ON object_files(object_id);
+CREATE INDEX idx_object_files_is_cover ON object_files(is_cover);
+
+-- Ãndice GIN de bÃºsqueda en espaÃ±ol sobre title, description, location, zone.
+CREATE INDEX idx_objects_search_gin ON objects
+  USING GIN(to_tsvector('spanish', title || ' ' || description || ' ' || location || ' ' || zone));
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE object_files ENABLE ROW LEVEL SECURITY;
+
+-- categories: lectura pÃºblica SOLO de categorÃ­as globales activas (institution_id IS NULL).
+-- Las categorÃ­as institucionales (institution_id IS NOT NULL) solo son visibles
+-- a miembros autenticados de esa misma instituciÃ³n.
+CREATE POLICY categories_select_public_global ON categories
+  FOR SELECT TO anon, authenticated
+  USING (is_active = true AND institution_id IS NULL);
+
+CREATE POLICY categories_select_institution ON categories
+  FOR SELECT TO authenticated
+  USING (
+    institution_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = categories.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- objects: lectura pÃºblica (visitante) de objetos publicados en instituciones activas.
+-- RLS filtra filas, no columnas. La proyecciÃ³n de columnas pÃºblicas se gestiona
+-- en la capa de aplicaciÃ³n/servidor.
+CREATE POLICY objects_select_public ON objects
+  FOR SELECT TO anon, authenticated
+  USING (
+    state = 'published'
+    AND EXISTS (
+      SELECT 1 FROM institutions i
+      WHERE i.id = objects.institution_id AND i.is_active = true
+    )
+  );
+
+-- objects: lectura restringida para usuarios autenticados de la misma instituciÃ³n.
+CREATE POLICY objects_select_authenticated ON objects
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = objects.institution_id
+        AND m.is_active = true
+    )
+    AND (
+      state = 'published'
+      OR reporter_id = auth.uid()
+      OR EXISTS (
+        SELECT 1 FROM memberships m2
+        WHERE m2.profile_id = auth.uid()
+          AND m2.institution_id = objects.institution_id
+          AND m2.is_active = true
+          AND m2.role IN ('custody_staff', 'reviewer', 'institution_admin')
+      )
+    )
+  );
+
+-- objects: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_create_object en migraciÃ³n 006).
+-- No hay polÃ­tica INSERT directa para clientes; RLS deniega por defecto.
+
+-- objects: actualizaciÃ³n. El reporter puede editar su propio reporte solo en estado 'reported'.
+-- Cambios de estado solo por roles autorizados (vÃ­a funciÃ³n de servidor).
+CREATE POLICY objects_update_reporter ON objects
+  FOR UPDATE TO authenticated
+  USING (
+    reporter_id = auth.uid()
+    AND state = 'reported'
+  )
+  WITH CHECK (
+    reporter_id = auth.uid()
+    AND state = 'reported'
+  );
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 3.1: BÃºsqueda insensible a acentos.
+-- SELECT * FROM objects WHERE to_tsvector('spanish', title) @@ to_tsquery('spanish', 'audifonos');
+
+-- Prueba 3.2: reference_code es Ãºnico por instituciÃ³n.
+-- (Insertar dos objetos con mismo reference_code y mismo institution_id -- debe fallar)
+
+-- Prueba 3.3: Visitante no lee objetos no publicados.
+-- SELECT * FROM objects WHERE state != 'published'; -- debe devolver 0 filas para anon
+
+-- Prueba 3.4: Visitante no lee categorÃ­as institucionales (solo globales).
+-- SELECT * FROM categories WHERE institution_id IS NOT NULL; -- debe devolver 0 filas para anon
+
+-- Prueba 3.5: Clave forÃ¡nea compuesta: campus de otra instituciÃ³n no puede asociarse al objeto.
+-- (Intentar INSERT con campus_id de instituciÃ³n B e institution_id de instituciÃ³n A -- debe fallar)
+
+========== 004_custody_recovery.sql ==========
+
+-- MigraciÃ³n 004: Custodia y reclamaciones
+-- PropÃ³sito: registrar recepciÃ³n fÃ­sica, custodia y solicitudes de recuperaciÃ³n con decisiones manuales.
+-- Dependencias: 003 (objetos, object_files), 002 (profiles).
+-- Riesgos: medio. La transiciÃ³n under_review -> in_custody debe validarse en trigger o funciÃ³n de servidor.
+-- ReversiÃ³n: DROP TABLE recovery_reviews; DROP TABLE recovery_requests; DROP TABLE custody_records; DROP TABLE audit_log;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE custody_records (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id),
+  received_by uuid NOT NULL REFERENCES profiles(id),
+  received_at timestamptz NOT NULL DEFAULT now(),
+  custody_point text NOT NULL,
+  condition_notes text,
+  received_from text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Un objeto solo tiene un registro de custodia activo.
+CREATE UNIQUE INDEX idx_custody_records_unique_object ON custody_records(object_id);
+
+CREATE TABLE recovery_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id),
+  claimant_id uuid NOT NULL REFERENCES profiles(id),
+  claimed_at timestamptz NOT NULL DEFAULT now(),
+  description text NOT NULL,
+  contact_preference text,
+  state text NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'cancelled')),
+  reviewed_by uuid REFERENCES profiles(id),
+  reviewed_at timestamptz,
+  review_notes text,
+  decision_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Un objeto publicado puede tener varias solicitudes (histÃ³rico), pero solo una activa (pending) a la vez.
+CREATE UNIQUE INDEX idx_recovery_requests_unique_pending
+  ON recovery_requests(object_id)
+  WHERE state = 'pending';
+
+CREATE TABLE recovery_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recovery_request_id uuid NOT NULL REFERENCES recovery_requests(id),
+  reviewer_id uuid NOT NULL REFERENCES profiles(id),
+  decision text NOT NULL CHECK (decision IN ('approved', 'rejected', 'needs_more_info')),
+  notes text,
+  decided_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE audit_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  actor_id uuid REFERENCES profiles(id),
+  action text NOT NULL,
+  entity_type text NOT NULL,
+  entity_id text NOT NULL,
+  old_values jsonb,
+  new_values jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_custody_records_object_id ON custody_records(object_id);
+CREATE INDEX idx_custody_records_received_by ON custody_records(received_by);
+CREATE INDEX idx_custody_records_received_at ON custody_records(received_at);
+CREATE INDEX idx_recovery_requests_object_id ON recovery_requests(object_id);
+CREATE INDEX idx_recovery_requests_claimant_id ON recovery_requests(claimant_id);
+CREATE INDEX idx_recovery_requests_state ON recovery_requests(state);
+CREATE INDEX idx_recovery_requests_claimed_at ON recovery_requests(claimed_at);
+CREATE INDEX idx_recovery_reviews_recovery_request_id ON recovery_reviews(recovery_request_id);
+CREATE INDEX idx_recovery_reviews_reviewer_id ON recovery_reviews(reviewer_id);
+CREATE INDEX idx_recovery_reviews_decision ON recovery_reviews(decision);
+CREATE INDEX idx_recovery_reviews_decided_at ON recovery_reviews(decided_at);
+CREATE INDEX idx_audit_log_institution_id ON audit_log(institution_id);
+CREATE INDEX idx_audit_log_actor_id ON audit_log(actor_id);
+CREATE INDEX idx_audit_log_action ON audit_log(action);
+CREATE INDEX idx_audit_log_created_at ON audit_log(created_at);
+
+-- ============================================================
+-- Funciones y triggers de integridad institucional (C-1)
+-- ============================================================
+
+-- FunciÃ³n: valida que received_by tenga membresÃ­a activa en la misma instituciÃ³n que el objeto.
+CREATE OR REPLACE FUNCTION public.validate_custody_institution()
+RETURNS TRIGGER AS $$
+DECLARE
+  object_institution_id uuid;
+  receiver_institution_id uuid;
+BEGIN
+  -- Obtener instituciÃ³n del objeto
+  SELECT institution_id INTO object_institution_id
+  FROM objects WHERE id = NEW.object_id;
+
+  -- Obtener instituciÃ³n del receptor a travÃ©s de su membresÃ­a activa
+  SELECT institution_id INTO receiver_institution_id
+  FROM memberships
+  WHERE profile_id = NEW.received_by
+    AND is_active = true
+  LIMIT 1;
+
+  IF receiver_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  IF receiver_institution_id <> object_institution_id THEN
+    RAISE EXCEPTION 'El personal de custodia no pertenece a la misma instituciÃ³n que el objeto';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: validar instituciÃ³n antes de crear un registro de custodia.
+DROP TRIGGER IF EXISTS trg_validate_custody_institution ON custody_records;
+CREATE TRIGGER trg_validate_custody_institution
+  BEFORE INSERT ON custody_records
+  FOR EACH ROW EXECUTE FUNCTION public.validate_custody_institution();
+
+-- FunciÃ³n: valida que un objeto 'found' no se publique sin registro de custodia.
+CREATE OR REPLACE FUNCTION public.validate_object_publish()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.state = 'published' AND OLD.state <> 'published' THEN
+    IF NEW.kind = 'found' THEN
+      IF NOT EXISTS (SELECT 1 FROM custody_records WHERE object_id = NEW.id) THEN
+        RAISE EXCEPTION 'Un objeto encontrado debe tener registro de custodia antes de publicarse';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: validar publicaciÃ³n de objetos.
+DROP TRIGGER IF EXISTS trg_validate_object_publish ON objects;
+CREATE TRIGGER trg_validate_object_publish
+  BEFORE UPDATE OF state ON objects
+  FOR EACH ROW
+  WHEN (NEW.state = 'published' AND OLD.state IS DISTINCT FROM NEW.state)
+  EXECUTE FUNCTION public.validate_object_publish();
+
+-- FunciÃ³n: crear registro de custodia (solo custody_staff de la misma instituciÃ³n).
+CREATE OR REPLACE FUNCTION public.fn_create_custody_record(
+  p_object_id uuid,
+  p_custody_point text,
+  p_condition_notes text,
+  p_received_from text
+) RETURNS uuid AS $$
+DECLARE
+  v_custody_record_id uuid;
+  v_object_kind text;
+  v_object_institution_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y kind del objeto
+  SELECT o.institution_id, o.kind INTO v_object_institution_id, v_object_kind
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Validar que el actor es custody_staff en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+    AND m.role = 'custody_staff'
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no es personal de custodia en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Solo objetos found pueden entrar en custodia
+  IF v_object_kind <> 'found' THEN
+    RAISE EXCEPTION 'Solo objetos encontrados pueden registrar custodia fÃ­sica';
+  END IF;
+
+  -- Validar que no existe ya custodia para este objeto
+  IF EXISTS (SELECT 1 FROM custody_records WHERE object_id = p_object_id) THEN
+    RAISE EXCEPTION 'El objeto ya tiene registro de custodia';
+  END IF;
+
+  -- Insertar custodia
+  INSERT INTO custody_records (object_id, received_by, custody_point, condition_notes, received_from, created_at)
+  VALUES (p_object_id, auth.uid(), p_custody_point, p_condition_notes, p_received_from, now())
+  RETURNING id INTO v_custody_record_id;
+
+  -- Actualizar estado del objeto a in_custody
+  UPDATE objects SET state = 'in_custody', updated_at = now() WHERE id = p_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'object.custody_receive',
+    'object', p_object_id::text,
+    jsonb_build_object('custody_point', p_custody_point, 'condition_notes', p_condition_notes),
+    now()
+  );
+
+  RETURN v_custody_record_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_custody_record(uuid, text, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_custody_record(uuid, text, text, text) TO authenticated;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE custody_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recovery_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recovery_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+
+-- custody_records: lectura solo personal autorizado de la misma instituciÃ³n.
+CREATE POLICY custody_records_select_institution ON custody_records
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN objects o ON o.id = custody_records.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+        AND m.role IN ('custody_staff', 'reviewer', 'institution_admin')
+    )
+  );
+
+-- custody_records: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_create_custody_record).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- custody_records: actualizaciÃ³n solo creador reciente o admin (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica UPDATE directa para clientes.
+
+-- recovery_requests: lectura propia del reclamante; personal autorizado de la misma instituciÃ³n lee todas.
+CREATE POLICY recovery_requests_select_claimant ON recovery_requests
+  FOR SELECT TO authenticated
+  USING (claimant_id = auth.uid());
+
+CREATE POLICY recovery_requests_select_institution ON recovery_requests
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN objects o ON o.id = recovery_requests.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- recovery_requests: inserciÃ³n solo estudiantes con membresÃ­a activa sobre objetos publicados de su instituciÃ³n.
+-- VerificaciÃ³n explÃ­cita de instituciÃ³n sin LIMIT 1 ambiguo.
+CREATE POLICY recovery_requests_insert_student ON recovery_requests
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    claimant_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.role = 'student'
+        AND m.is_active = true
+    )
+    AND EXISTS (
+      SELECT 1 FROM objects o
+      JOIN memberships mo ON mo.profile_id = auth.uid()
+      WHERE o.id = recovery_requests.object_id
+        AND o.state = 'published'
+        AND o.institution_id = mo.institution_id
+        AND mo.is_active = true
+    )
+  );
+
+-- recovery_requests: actualizaciÃ³n. El claimant puede cancelar su propia solicitud en estado 'pending'.
+CREATE POLICY recovery_requests_update_claimant ON recovery_requests
+  FOR UPDATE TO authenticated
+  USING (
+    claimant_id = auth.uid()
+    AND state = 'pending'
+  )
+  WITH CHECK (
+    claimant_id = auth.uid()
+    AND state IN ('cancelled')
+  );
+
+-- recovery_requests: cambios de estado (approved/rejected) solo vÃ­a funciÃ³n de servidor (reviewer).
+-- No hay polÃ­tica UPDATE directa para cambiar a approved/rejected desde el cliente.
+
+-- recovery_reviews: lectura del reclamante de sus propias solicitudes; personal autorizado lee todas.
+CREATE POLICY recovery_reviews_select_claimant ON recovery_reviews
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM recovery_requests rr
+      WHERE rr.id = recovery_reviews.recovery_request_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+CREATE POLICY recovery_reviews_select_institution ON recovery_reviews
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN recovery_requests rr ON rr.id = recovery_reviews.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- recovery_reviews: inserciÃ³n solo reviewer o institution_admin (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica INSERT directa para clientes.
+-- recovery_reviews: inmutable (no UPDATE/DELETE directo).
+
+-- audit_log: solo lectura para roles humanos; inserciÃ³n solo mediante funciones de servidor.
+-- No hay polÃ­tica INSERT/UPDATE/DELETE para clientes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 4.1: Una reclamaciÃ³n no se aprueba automÃ¡ticamente.
+-- (Intentar UPDATE state='approved' directamente en recovery_requests -- debe fallar vÃ­a RLS)
+
+-- Prueba 4.2: Objeto 'found' sin custody_records no puede publicarse.
+-- (Intentar UPDATE objects SET state='published' WHERE kind='found' sin custody_records -- debe fallar vÃ­a trigger)
+
+-- Prueba 4.3: No hay dos solicitudes 'pending' para el mismo objeto.
+-- (Intentar crear dos solicitudes con state='pending' para el mismo object_id -- debe fallar por Ã­ndice parcial)
+
+-- Prueba 4.4: Personal de custodia de instituciÃ³n A no puede crear custodia para objeto de instituciÃ³n B.
+-- (Intentar INSERT en custody_records con object_id de instituciÃ³n B y received_by de instituciÃ³n A -- debe fallar vÃ­a trigger)
+
+-- Prueba 4.5: Estudiante no puede crear custodia (solo custody_staff).
+-- (Ejecutar fn_create_custody_record como estudiante -- debe fallar)
+
+========== 005_deliveries_qr.sql ==========
+
+-- MigraciÃ³n 005: Entregas y validaciÃ³n QR
+-- PropÃ³sito: gestionar entregas fÃ­sicas verificadas mediante QR de un solo uso.
+-- Dependencias: 004 (recovery_requests, audit_log).
+-- Riesgos: alto. La operaciÃ³n atÃ³mica de confirmaciÃ³n de entrega debe implementarse como funciÃ³n de servidor.
+-- ReversiÃ³n: DROP TABLE delivery_qr_attempts; DROP TABLE deliveries;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE deliveries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recovery_request_id uuid NOT NULL REFERENCES recovery_requests(id),
+  prepared_by uuid NOT NULL REFERENCES profiles(id),
+  prepared_at timestamptz NOT NULL DEFAULT now(),
+  delivery_point text NOT NULL,
+  qr_token_hash text NOT NULL,
+  qr_expires_at timestamptz NOT NULL,
+  qr_revoked_at timestamptz,
+  delivered_at timestamptz,
+  delivered_by uuid REFERENCES profiles(id),
+  delivery_confirmed_at timestamptz,
+  confirmation_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Una entrega por reclamaciÃ³n aprobada.
+CREATE UNIQUE INDEX idx_deliveries_unique_recovery_request ON deliveries(recovery_request_id);
+
+CREATE TABLE delivery_qr_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  delivery_id uuid NOT NULL REFERENCES deliveries(id),
+  attempted_at timestamptz NOT NULL DEFAULT now(),
+  success boolean NOT NULL,
+  failure_reason text CHECK (failure_reason IN (
+    'expired', 'revoked', 'already_used', 'invalid', 'membership_missing', 'hash_mismatch'
+  )),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_deliveries_recovery_request_id ON deliveries(recovery_request_id);
+CREATE INDEX idx_deliveries_qr_token_hash ON deliveries(qr_token_hash);
+CREATE INDEX idx_deliveries_qr_expires_at ON deliveries(qr_expires_at);
+CREATE INDEX idx_deliveries_delivered_at ON deliveries(delivered_at);
+CREATE INDEX idx_delivery_qr_attempts_delivery_id ON delivery_qr_attempts(delivery_id);
+CREATE INDEX idx_delivery_qr_attempts_success ON delivery_qr_attempts(success);
+
+-- ============================================================
+-- Funciones privilegiadas (SECURITY DEFINER)
+-- ============================================================
+
+-- FunciÃ³n: preparar una entrega (generar QR con token hash).
+-- Solo custody_staff o institution_admin de la misma instituciÃ³n, sobre reclamaciÃ³n aprobada.
+-- Valida token no vacÃ­o y expiraciÃ³n futura.
+-- Actualiza objects.state a 'delivery_prepared' dentro de la misma transacciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_prepare_delivery(
+  p_recovery_request_id uuid,
+  p_delivery_point text,
+  p_qr_expires_at timestamptz,
+  p_qr_token_plain text
+) RETURNS uuid AS $$
+DECLARE
+  v_delivery_id uuid;
+  v_object_institution_id uuid;
+  v_object_id uuid;
+  v_preparer_institution_id uuid;
+  v_qr_token_hash text;
+BEGIN
+  -- Validar que el usuario estÃ¡ autenticado
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Validar token no vacÃ­o
+  IF p_qr_token_plain IS NULL OR length(trim(p_qr_token_plain)) = 0 THEN
+    RAISE EXCEPTION 'El token QR no puede estar vacÃ­o';
+  END IF;
+
+  -- Validar expiraciÃ³n futura
+  IF p_qr_expires_at <= now() THEN
+    RAISE EXCEPTION 'La fecha de expiraciÃ³n del QR debe ser futura';
+  END IF;
+
+  -- Obtener instituciÃ³n y id del objeto a travÃ©s de la reclamaciÃ³n
+  SELECT o.institution_id, o.id INTO v_object_institution_id, v_object_id
+  FROM recovery_requests rr
+  JOIN objects o ON o.id = rr.object_id
+  WHERE rr.id = p_recovery_request_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'ReclamaciÃ³n no encontrada';
+  END IF;
+
+  -- Validar que el preparador tiene membresÃ­a activa en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_preparer_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_preparer_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no es personal autorizado en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n estÃ¡ aprobada
+  IF NOT EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE id = p_recovery_request_id AND state = 'approved'
+  ) THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n no estÃ¡ aprobada';
+  END IF;
+
+  -- Validar que no existe ya una entrega para esta reclamaciÃ³n
+  IF EXISTS (SELECT 1 FROM deliveries WHERE recovery_request_id = p_recovery_request_id) THEN
+    RAISE EXCEPTION 'Ya existe una entrega para esta reclamaciÃ³n';
+  END IF;
+
+  -- Calcular hash del token QR (nunca almacenar el token plano)
+  v_qr_token_hash := encode(digest(p_qr_token_plain, 'sha256'), 'hex');
+
+  -- Insertar entrega
+  INSERT INTO deliveries (
+    recovery_request_id, prepared_by, prepared_at, delivery_point,
+    qr_token_hash, qr_expires_at, created_at, updated_at
+  )
+  VALUES (
+    p_recovery_request_id, auth.uid(), now(), p_delivery_point,
+    v_qr_token_hash, p_qr_expires_at, now(), now()
+  )
+  RETURNING id INTO v_delivery_id;
+
+  -- Actualizar estado del objeto a delivery_prepared dentro de la misma transacciÃ³n
+  UPDATE objects
+  SET state = 'delivery_prepared', updated_at = now()
+  WHERE id = v_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'delivery.prepare',
+    'delivery', v_delivery_id::text,
+    jsonb_build_object('delivery_point', p_delivery_point, 'qr_expires_at', p_qr_expires_at),
+    now()
+  );
+
+  RETURN v_delivery_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_prepare_delivery(uuid, text, timestamptz, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_prepare_delivery(uuid, text, timestamptz, text) TO authenticated;
+
+-- FunciÃ³n: confirmar entrega fÃ­sica mediante verificaciÃ³n QR.
+-- OperaciÃ³n atÃ³mica: UPDATE condicional WHERE delivered_at IS NULL.
+-- Solo custody_staff o institution_admin de la misma instituciÃ³n.
+-- Valida que la reclamaciÃ³n siga aprobada y que el objeto estÃ© en estado esperado.
+-- Actualiza objects.state a 'delivered' dentro de la misma transacciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_confirm_delivery_qr(
+  p_delivery_id uuid,
+  p_token_plain text
+) RETURNS boolean AS $$
+DECLARE
+  v_delivery_institution_id uuid;
+  v_object_id uuid;
+  v_object_state text;
+  v_recovery_state text;
+  v_actor_institution_id uuid;
+  v_token_hash text;
+  v_rows_updated integer;
+BEGIN
+  -- Validar autenticaciÃ³n
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n, objeto y estado de la reclamaciÃ³n de la entrega
+  SELECT o.institution_id, o.id, o.state, rr.state INTO
+    v_delivery_institution_id, v_object_id, v_object_state, v_recovery_state
+  FROM deliveries d
+  JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+  JOIN objects o ON o.id = rr.object_id
+  WHERE d.id = p_delivery_id;
+
+  IF v_delivery_institution_id IS NULL THEN
+    -- No revelar si el delivery_id existe (respuesta genÃ©rica)
+    RAISE EXCEPTION 'Entrega no encontrada o no autorizada';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n siga aprobada
+  IF v_recovery_state <> 'approved' THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n asociada no estÃ¡ aprobada';
+  END IF;
+
+  -- Validar que el objeto estÃ© en estado esperado (delivery_prepared)
+  IF v_object_state <> 'delivery_prepared' THEN
+    RAISE EXCEPTION 'El objeto no estÃ¡ en estado de entrega preparada';
+  END IF;
+
+  -- Validar que el actor tiene membresÃ­a activa en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_delivery_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos en la instituciÃ³n de la entrega';
+  END IF;
+
+  -- Calcular hash del token proporcionado
+  v_token_hash := encode(digest(p_token_plain, 'sha256'), 'hex');
+
+  -- ConfirmaciÃ³n atÃ³mica: solo una fila puede ser actualizada (delivered_at IS NULL)
+  UPDATE deliveries
+  SET delivered_at = now(),
+      delivered_by = auth.uid(),
+      delivery_confirmed_at = now(),
+      updated_at = now()
+  WHERE id = p_delivery_id
+    AND delivered_at IS NULL
+    AND qr_revoked_at IS NULL
+    AND qr_expires_at > now()
+    AND qr_token_hash = v_token_hash;
+
+  GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+
+  IF v_rows_updated = 0 THEN
+    -- Registrar intento fallido (sin exponer token ni datos sensibles)
+    INSERT INTO public.delivery_qr_attempts (
+      delivery_id, attempted_at, success, failure_reason, created_at
+    )
+    VALUES (
+      p_delivery_id, now(), false,
+      CASE
+        WHEN NOT EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_token_hash = v_token_hash) THEN 'hash_mismatch'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND delivered_at IS NOT NULL) THEN 'already_used'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_revoked_at IS NOT NULL) THEN 'revoked'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_expires_at <= now()) THEN 'expired'
+        ELSE 'invalid'
+      END,
+      now()
+    );
+
+    INSERT INTO public.audit_log (
+      institution_id, actor_id, action, entity_type, entity_id,
+      new_values, created_at
+    )
+    VALUES (
+      v_delivery_institution_id, auth.uid(), 'delivery.confirm.failed',
+      'delivery', p_delivery_id::text,
+      jsonb_build_object('reason', 'qr_validation_failed'),
+      now()
+    );
+
+    RETURN false;
+  END IF;
+
+  -- Actualizar estado del objeto a delivered dentro de la misma transacciÃ³n
+  UPDATE objects
+  SET state = 'delivered', updated_at = now()
+  WHERE id = v_object_id;
+
+  -- Registrar intento exitoso
+  INSERT INTO public.delivery_qr_attempts (
+    delivery_id, attempted_at, success, failure_reason, created_at
+  )
+  VALUES (p_delivery_id, now(), true, NULL, now());
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_delivery_institution_id, auth.uid(), 'delivery.confirm',
+    'delivery', p_delivery_id::text,
+    jsonb_build_object('delivered_at', now(), 'delivered_by', auth.uid()),
+    now()
+  );
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_confirm_delivery_qr(uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_confirm_delivery_qr(uuid, text) TO authenticated;
+
+-- FunciÃ³n: revocar un QR antes de la entrega fÃ­sica.
+CREATE OR REPLACE FUNCTION public.fn_revoke_qr(
+  p_delivery_id uuid
+) RETURNS boolean AS $$
+DECLARE
+  v_delivery_institution_id uuid;
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  SELECT o.institution_id, o.id INTO v_delivery_institution_id, v_object_id
+  FROM deliveries d
+  JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+  JOIN objects o ON o.id = rr.object_id
+  WHERE d.id = p_delivery_id AND d.delivered_at IS NULL;
+
+  IF v_delivery_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Entrega no encontrada o ya entregada';
+  END IF;
+
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_delivery_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos para revocar en esta instituciÃ³n';
+  END IF;
+
+  UPDATE deliveries
+  SET qr_revoked_at = now(), updated_at = now()
+  WHERE id = p_delivery_id AND qr_revoked_at IS NULL AND delivered_at IS NULL;
+
+  -- Actualizar estado del objeto a delivery_prepared (vuelto a preparar)
+  UPDATE objects
+  SET state = 'delivery_prepared', updated_at = now()
+  WHERE id = v_object_id;
+
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_delivery_institution_id, auth.uid(), 'delivery.revoke',
+    'delivery', p_delivery_id::text,
+    jsonb_build_object('revoked_at', now()),
+    now()
+  );
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_revoke_qr(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_revoke_qr(uuid) TO authenticated;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_qr_attempts ENABLE ROW LEVEL SECURITY;
+
+-- deliveries: lectura propia del reclamante; personal autorizado de la misma instituciÃ³n.
+CREATE POLICY deliveries_select_claimant ON deliveries
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM recovery_requests rr
+      WHERE rr.id = deliveries.recovery_request_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+CREATE POLICY deliveries_select_institution ON deliveries
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN recovery_requests rr ON rr.id = deliveries.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- deliveries: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_prepare_delivery).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- deliveries: actualizaciÃ³n (confirmar entrega) solo vÃ­a funciÃ³n de servidor (fn_confirm_delivery_qr).
+-- No hay polÃ­tica UPDATE directa para clientes.
+
+-- delivery_qr_attempts: lectura personal autorizado de la misma instituciÃ³n; reclamante ve sus propios intentos.
+CREATE POLICY delivery_qr_attempts_select_institution ON delivery_qr_attempts
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN deliveries d ON d.id = delivery_qr_attempts.delivery_id
+      JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+CREATE POLICY delivery_qr_attempts_select_claimant ON delivery_qr_attempts
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM deliveries d
+      JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+      WHERE d.id = delivery_qr_attempts.delivery_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+-- delivery_qr_attempts: inserciÃ³n solo el sistema (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 5.1: Uso Ãºnico de QR (dos intentos simultÃ¡neos, solo uno tiene Ã©xito).
+-- (Ejecutar fn_confirm_delivery_qr dos veces concurrentemente con mismo delivery_id y token -- una true, otra false)
+
+-- Prueba 5.2: QR vencido no puede confirmarse.
+-- (fn_confirm_delivery_qr con qr_expires_at en el pasado -- debe devolver false)
+
+-- Prueba 5.3: QR reutilizado (ya entregado) no puede confirmarse.
+-- (fn_confirm_delivery_qr despuÃ©s de delivered_at establecido -- debe devolver false)
+
+-- Prueba 5.4: Estudiante no puede escribir delivered_at directamente.
+-- (UPDATE deliveries SET delivered_at = now() -- debe fallar con RLS)
+
+-- Prueba 5.5: Token falsificado no coincide con el hash.
+-- (fn_confirm_delivery_qr con token incorrecto -- debe devolver false)
+
+-- Prueba 5.6: El token plano nunca se almacena ni se registra en logs.
+-- (SELECT qr_token_hash FROM deliveries -- debe ser un hash, nunca el token plano)
+
+-- Prueba 5.7: Token vacÃ­o o expiraciÃ³n pasada al preparar entrega son rechazados.
+-- (fn_prepare_delivery con token vacÃ­o o qr_expires_at <= now() -- debe fallar)
+
+========== 006_audit_platform_admin.sql ==========
+
+-- MigraciÃ³n 006: AuditorÃ­a, administradores globales y funciones de servidor faltantes
+-- PropÃ³sito: trazabilidad inmutable, tabla de administradores globales y funciones de servidor
+-- para crear objetos, membresÃ­as, cambiar estados y revisar reclamaciones.
+-- Dependencias: 001 (instituciones), 002 (profiles), 003 (objetos), 004 (custodia, reclamaciones, audit_log), 005 (entregas).
+-- Riesgos: bajo.
+-- ReversiÃ³n: DROP TABLE platform_admins;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE platform_admins (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES profiles(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true
+);
+
+CREATE UNIQUE INDEX idx_platform_admins_unique_profile ON platform_admins(profile_id)
+  WHERE is_active = true;
+
+-- Ãndices
+CREATE INDEX idx_platform_admins_profile_id ON platform_admins(profile_id);
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
+
+-- platform_admins: lectura de propia fila solo por el perfil correspondiente (platform_admin).
+-- Ninguna polÃ­tica permite a un autenticado leer toda la tabla.
+CREATE POLICY platform_admins_select_own ON platform_admins
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id AND is_active = true);
+
+-- platform_admins: ninguna polÃ­tica INSERT/UPDATE/DELETE directa para clientes.
+-- RLS deniega por defecto. El rol platform_admin se gestiona Ãºnicamente vÃ­a funciones
+-- de servidor o inserciÃ³n directa por plataforma (service_role), nunca desde el navegador.
+
+-- audit_log: revisiÃ³n de consistencia. Las polÃ­ticas ya creadas en 004 se mantienen:
+-- - lectura de auditorÃ­a propia, de la instituciÃ³n (admin), o global (platform_admin)
+-- - escritura: solo el sistema (triggers o funciones de servidor). Nunca un cliente.
+
+-- ============================================================
+-- FunciÃ³n: verificar si un perfil es platform_admin (activo).
+-- SECURITY DEFINER: lee platform_admins sin exponer la tabla directamente.
+-- Puede ser llamada por institution_admin para verificar roles sin RLS recursion.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.fn_is_platform_admin(
+  p_profile_id uuid
+) RETURNS boolean AS $$
+DECLARE
+  v_is_admin boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM platform_admins
+    WHERE profile_id = p_profile_id AND is_active = true
+  ) INTO v_is_admin;
+
+  RETURN COALESCE(v_is_admin, false);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_is_platform_admin(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_is_platform_admin(uuid) TO authenticated;
+
+-- ============================================================
+-- Funciones de servidor faltantes (SECURITY DEFINER)
+-- ============================================================
+
+-- FunciÃ³n: crear objeto (reportar perdido/encontrado).
+-- Cualquier usuario autenticado con membresÃ­a activa puede crear un objeto en su instituciÃ³n.
+-- El institution_id se inyecta desde la membresÃ­a, no del cliente.
+CREATE OR REPLACE FUNCTION public.fn_create_object(
+  p_kind text,
+  p_title text,
+  p_description text,
+  p_zone text,
+  p_location text,
+  p_category_id uuid,
+  p_reference_code text
+) RETURNS uuid AS $$
+DECLARE
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  IF p_kind NOT IN ('lost', 'found') THEN
+    RAISE EXCEPTION 'Tipo de objeto invÃ¡lido: debe ser lost o found';
+  END IF;
+
+  -- Obtener instituciÃ³n del actor a travÃ©s de membresÃ­a activa
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- Validar que la categorÃ­a pertenezca a la instituciÃ³n o sea global
+  IF p_category_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM categories c
+      WHERE c.id = p_category_id
+        AND (c.institution_id IS NULL OR c.institution_id = v_actor_institution_id)
+        AND c.is_active = true
+    ) THEN
+      RAISE EXCEPTION 'CategorÃ­a no vÃ¡lida o no disponible para esta instituciÃ³n';
+    END IF;
+  END IF;
+
+  -- Insertar objeto con institution_id inyectado desde membresÃ­a
+  INSERT INTO objects (
+    institution_id, kind, title, description, zone, location,
+    category_id, reporter_id, reported_at, state, reference_code,
+    created_at, updated_at
+  )
+  VALUES (
+    v_actor_institution_id, p_kind, p_title, p_description, p_zone, p_location,
+    p_category_id, auth.uid(), now(), 'reported', p_reference_code,
+    now(), now()
+  )
+  RETURNING id INTO v_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_actor_institution_id, auth.uid(), 'object.create',
+    'object', v_object_id::text,
+    jsonb_build_object('kind', p_kind, 'title', p_title, 'reference_code', p_reference_code),
+    now()
+  );
+
+  RETURN v_object_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_object(text, text, text, text, text, uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_object(text, text, text, text, text, uuid, text) TO authenticated;
+
+-- FunciÃ³n: crear membresÃ­a (solo institution_admin de la misma instituciÃ³n o platform_admin).
+CREATE OR REPLACE FUNCTION public.fn_create_membership(
+  p_profile_id uuid,
+  p_institution_id uuid,
+  p_campus_id uuid,
+  p_role text,
+  p_is_primary boolean
+) RETURNS uuid AS $$
+DECLARE
+  v_membership_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+  v_target_exists boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Validar rol permitido
+  IF p_role NOT IN ('student', 'custody_staff', 'reviewer', 'institution_admin') THEN
+    RAISE EXCEPTION 'Rol no vÃ¡lido';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  ORDER BY CASE m.role WHEN 'platform_admin' THEN 0 WHEN 'institution_admin' THEN 1 ELSE 2 END
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- Solo institution_admin de la misma instituciÃ³n o platform_admin pueden crear membresÃ­as
+  IF v_actor_role = 'institution_admin' THEN
+    IF v_actor_institution_id <> p_institution_id THEN
+      RAISE EXCEPTION 'El actor no puede crear membresÃ­as en otra instituciÃ³n';
+    END IF;
+  ELSIF v_actor_role <> 'platform_admin' THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos para crear membresÃ­as';
+  END IF;
+
+  -- Prevenir auto-escalada: un usuario no puede asignarse rol privilegiado a sÃ­ mismo
+  IF auth.uid() = p_profile_id AND p_role IN ('institution_admin', 'platform_admin') THEN
+    RAISE EXCEPTION 'No se puede auto-asignar rol privilegiado';
+  END IF;
+
+  -- Validar que el perfil destino exista
+  SELECT EXISTS (SELECT 1 FROM profiles WHERE id = p_profile_id) INTO v_target_exists;
+  IF NOT v_target_exists THEN
+    RAISE EXCEPTION 'El perfil destino no existe';
+  END IF;
+
+  -- Validar que la instituciÃ³n exista y estÃ© activa
+  IF NOT EXISTS (SELECT 1 FROM institutions WHERE id = p_institution_id AND is_active = true) THEN
+    RAISE EXCEPTION 'InstituciÃ³n no encontrada o inactiva';
+  END IF;
+
+  -- Validar campus si se proporciona
+  IF p_campus_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM campuses WHERE id = p_campus_id AND institution_id = p_institution_id AND is_active = true
+    ) THEN
+      RAISE EXCEPTION 'Campus no vÃ¡lido para esta instituciÃ³n';
+    END IF;
+  END IF;
+
+  -- Insertar membresÃ­a
+  INSERT INTO memberships (
+    profile_id, institution_id, campus_id, role, is_primary, is_active,
+    created_at, updated_at
+  )
+  VALUES (
+    p_profile_id, p_institution_id, p_campus_id, p_role, p_is_primary, true,
+    now(), now()
+  )
+  RETURNING id INTO v_membership_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    p_institution_id, auth.uid(), 'membership.create',
+    'membership', v_membership_id::text,
+    jsonb_build_object('role', p_role, 'profile_id', p_profile_id, 'institution_id', p_institution_id),
+    now()
+  );
+
+  RETURN v_membership_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_membership(uuid, uuid, uuid, text, boolean) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_membership(uuid, uuid, uuid, text, boolean) TO authenticated;
+
+-- FunciÃ³n: cambiar estado de objeto segÃºn flujo autorizado.
+-- Valida transiciones permitidas y actor autorizado.
+CREATE OR REPLACE FUNCTION public.fn_change_object_state(
+  p_object_id uuid,
+  p_new_state text
+) RETURNS void AS $$
+DECLARE
+  v_object_kind text;
+  v_object_state text;
+  v_object_institution_id uuid;
+  v_reporter_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+  v_has_custody boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener datos del objeto
+  SELECT o.kind, o.state, o.institution_id, o.reporter_id
+  INTO v_object_kind, v_object_state, v_object_institution_id, v_reporter_id
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar transiciÃ³n segÃºn flujo
+  IF v_object_state = 'reported' AND p_new_state = 'under_review' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden revisar un reporte';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'in_custody' THEN
+    IF v_object_kind <> 'found' THEN
+      RAISE EXCEPTION 'Solo objetos encontrados pueden entrar en custodia';
+    END IF;
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede recibir objetos';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'published' THEN
+    IF v_object_kind = 'found' THEN
+      RAISE EXCEPTION 'Objetos encontrados requieren custodia fÃ­sica antes de publicarse';
+    END IF;
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden publicar';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'rejected' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden rechazar';
+    END IF;
+  ELSIF v_object_state = 'published' AND p_new_state = 'claimed' THEN
+    -- Esta transiciÃ³n la hace el estudiante al crear una reclamaciÃ³n, no vÃ­a esta funciÃ³n
+    RAISE EXCEPTION 'Use fn_create_recovery_request para reclamar un objeto';
+  ELSIF v_object_state = 'claimed' AND p_new_state = 'approved' THEN
+    IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo revisiÃ³n o admin pueden aprobar reclamaciones';
+    END IF;
+  ELSIF v_object_state = 'claimed' AND p_new_state = 'rejected' THEN
+    IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo revisiÃ³n o admin pueden rechazar reclamaciones';
+    END IF;
+  ELSIF v_object_state = 'approved' AND p_new_state = 'delivery_prepared' THEN
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede preparar entregas';
+    END IF;
+  ELSIF v_object_state = 'delivery_prepared' AND p_new_state = 'delivered' THEN
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede confirmar entregas';
+    END IF;
+  ELSIF v_object_state = 'delivered' AND p_new_state = 'closed' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden cerrar procesos';
+    END IF;
+  ELSIF v_object_state = 'published' AND p_new_state = 'unclaimed' THEN
+    IF v_actor_role <> 'institution_admin' THEN
+      RAISE EXCEPTION 'Solo admin de instituciÃ³n puede declarar objetos no reclamados';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'TransiciÃ³n no permitida: % -> %', v_object_state, p_new_state;
+  END IF;
+
+  -- Actualizar estado
+  UPDATE objects SET state = p_new_state, updated_at = now() WHERE id = p_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'object.state_change',
+    'object', p_object_id::text,
+    jsonb_build_object('from_state', v_object_state, 'to_state', p_new_state),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_change_object_state(uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_change_object_state(uuid, text) TO authenticated;
+
+-- FunciÃ³n: revisar reclamaciÃ³n (aprobar/rechazar/necesita mÃ¡s info).
+-- Solo reviewer o institution_admin de la misma instituciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_review_recovery_request(
+  p_recovery_request_id uuid,
+  p_decision text,
+  p_review_notes text,
+  p_decision_reason text
+) RETURNS void AS $$
+DECLARE
+  v_recovery_request_state text;
+  v_object_institution_id uuid;
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  IF p_decision NOT IN ('approved', 'rejected', 'needs_more_info') THEN
+    RAISE EXCEPTION 'DecisiÃ³n no vÃ¡lida';
+  END IF;
+
+  -- Obtener estado de reclamaciÃ³n, instituciÃ³n del objeto y id del objeto
+  SELECT rr.state, o.institution_id, o.id
+  INTO v_recovery_request_state, v_object_institution_id, v_object_id
+  FROM recovery_requests rr
+  JOIN objects o ON o.id = rr.object_id
+  WHERE rr.id = p_recovery_request_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'ReclamaciÃ³n no encontrada';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n estÃ© pendiente
+  IF v_recovery_request_state <> 'pending' THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n ya fue resuelta';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Solo reviewer o institution_admin pueden revisar
+  IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+    RAISE EXCEPTION 'Solo personal de revisiÃ³n o admin pueden decidir reclamaciones';
+  END IF;
+
+  -- Prevenir auto-aprobaciÃ³n: el revisor no puede ser el claimant
+  IF EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE id = p_recovery_request_id AND claimant_id = auth.uid()
+  ) THEN
+    RAISE EXCEPTION 'No se puede revisar una reclamaciÃ³n propia';
+  END IF;
+
+  -- Actualizar reclamaciÃ³n
+  UPDATE recovery_requests
+  SET state = p_decision, reviewed_by = auth.uid(), reviewed_at = now(),
+      review_notes = p_review_notes, decision_reason = p_decision_reason,
+      updated_at = now()
+  WHERE id = p_recovery_request_id;
+
+  -- Insertar revisiÃ³n en historial inmutable
+  INSERT INTO recovery_reviews (
+    recovery_request_id, reviewer_id, decision, notes, decided_at, created_at
+  )
+  VALUES (
+    p_recovery_request_id, auth.uid(), p_decision, p_review_notes, now(), now()
+  );
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'recovery_request.review',
+    'recovery_request', p_recovery_request_id::text,
+    jsonb_build_object('decision', p_decision, 'reason', p_decision_reason),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_review_recovery_request(uuid, text, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_review_recovery_request(uuid, text, text, text) TO authenticated;
+
+-- FunciÃ³n: crear reclamaciÃ³n de recuperaciÃ³n (estudiante reporta objeto perdido/encontrado).
+-- Cualquier usuario autenticado con membresÃ­a activa en la instituciÃ³n del objeto
+-- puede crear una solicitud sobre un objeto publicado.
+-- El institution_id se deriva de la membresÃ­a del actor, no del cliente.
+-- No aprueba automÃ¡ticamente: la solicitud queda en estado 'pending'.
+CREATE OR REPLACE FUNCTION public.fn_create_recovery_request(
+  p_object_id uuid,
+  p_description text,
+  p_contact_preference text
+) RETURNS uuid AS $$
+DECLARE
+  v_recovery_request_id uuid;
+  v_object_institution_id uuid;
+  v_actor_institution_id uuid;
+  v_object_state text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y estado del objeto
+  SELECT o.institution_id, o.state INTO v_object_institution_id, v_object_state
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Validar que el objeto estÃ© publicado y sea reclamable
+  IF v_object_state <> 'published' THEN
+    RAISE EXCEPTION 'El objeto no estÃ¡ disponible para reclamaciÃ³n';
+  END IF;
+
+  -- Validar que el actor tiene membresÃ­a activa en la instituciÃ³n del objeto
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar que no exista ya una solicitud pendiente para este usuario y objeto
+  -- (el Ã­ndice parcial tambiÃ©n lo impide a nivel de BD, pero validamos explÃ­citamente)
+  IF EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE object_id = p_object_id
+      AND claimant_id = auth.uid()
+      AND state = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'Ya existe una solicitud pendiente para este objeto y usuario';
+  END IF;
+
+  -- Insertar reclamaciÃ³n con claimant_id = auth.uid() (sin impersonaciÃ³n)
+  INSERT INTO recovery_requests (
+    object_id, claimant_id, claimed_at, description, contact_preference,
+    state, created_at, updated_at
+  )
+  VALUES (
+    p_object_id, auth.uid(), now(), p_description, p_contact_preference,
+    'pending', now(), now()
+  )
+  RETURNING id INTO v_recovery_request_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'recovery_request.create',
+    'recovery_request', v_recovery_request_id::text,
+    jsonb_build_object('object_id', p_object_id, 'description', p_description),
+    now()
+  );
+
+  RETURN v_recovery_request_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_recovery_request(uuid, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_recovery_request(uuid, text, text) TO authenticated;
+
+-- ============================================================
+-- RevisiÃ³n de consistencia de polÃ­ticas RLS (migraciones 001-005)
+-- ============================================================
+-- Esta migraciÃ³n revisa que no existan polÃ­ticas excesivamente permisivas
+-- en las tablas creadas anteriormente. Cada polÃ­tica RLS creada en migraciones
+-- previas ya es restrictiva por diseÃ±o (denegar por defecto, permitir solo
+-- lo estrictamente necesario).
+
+-- Nota: No se alteran polÃ­ticas existentes aquÃ­; esta migraciÃ³n sirve como
+-- punto de revisiÃ³n y como ubicaciÃ³n de las tablas de plataforma y funciones
+-- de servidor faltantes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 6.1: Ninguna polÃ­tica RLS permite SELECT * a todos los autenticados en tablas privadas.
+-- (SELECT * FROM recovery_requests como usuario sin membresÃ­a en esa instituciÃ³n -- debe devolver 0 filas)
+
+-- Prueba 6.2: audit_log no se puede editar ni eliminar por usuarios ordinarios.
+-- (UPDATE audit_log SET ... -- debe fallar con RLS)
+-- (DELETE FROM audit_log -- debe fallar con RLS)
+
+-- Prueba 6.3: platform_admins no es accesible directamente desde el cliente.
+-- (SELECT * FROM platform_admins -- debe devolver 0 filas o fallar con RLS)
+
+-- Prueba 6.4: Un usuario de instituciÃ³n A no puede ver audit_log de instituciÃ³n B.
+-- (SELECT * FROM audit_log WHERE institution_id = 'institucion-B' -- debe devolver 0 filas para usuario de A)
+
+-- Prueba 6.5: fn_create_object inyecta institution_id desde membresÃ­a, no del cliente.
+-- (Intentar llamar con institution_id de otra instituciÃ³n -- debe usar la del actor)
+
+-- Prueba 6.6: fn_review_recovery_request impide auto-aprobaciÃ³n.
+-- (Intentar revisar propia reclamaciÃ³n -- debe fallar)
+
+-- Prueba 6.7: fn_change_object_state rechaza transiciones invÃ¡lidas.
+-- (Intentar reported -> delivered directamente -- debe fallar)
+
+
+
+===== 001_init_institutions.sql =====
+-- MigraciÃ³n 001: Instituciones y sedes
+-- PropÃ³sito: crear la base organizacional multiinstitucional.
+-- Dependencias: ninguna.
+-- Riesgos: bajo.
+-- ReversiÃ³n: DROP TABLE campuses; DROP TABLE institutions; (solo si no hay datos).
+
+-- ExtensiÃ³n requerida para gen_random_uuid() y digest()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE institutions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  legal_name text,
+  city text,
+  country text NOT NULL DEFAULT 'CO',
+  email_domain text UNIQUE,
+  logo_url text,
+  settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE campuses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  address text,
+  city text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_institutions_is_active ON institutions(is_active);
+CREATE INDEX idx_institutions_email_domain ON institutions(email_domain);
+CREATE INDEX idx_campuses_institution_id ON campuses(institution_id);
+CREATE INDEX idx_campuses_is_active ON campuses(is_active);
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE institutions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE campuses ENABLE ROW LEVEL SECURITY;
+
+-- institutions: lectura pÃºblica de instituciones activas.
+-- Escritura (INSERT/UPDATE/DELETE): no hay polÃ­tica directa para clientes.
+-- RLS deniega por defecto toda escritura directa desde el cliente.
+-- Las escrituras autorizadas ocurren Ãºnicamente mediante funciones SECURITY DEFINER
+-- creadas en migraciones posteriores.
+CREATE POLICY institutions_select_public ON institutions
+  FOR SELECT TO anon, authenticated
+  USING (is_active = true);
+
+-- campuses: lectura de sedes activas de instituciones activas.
+-- Escritura (INSERT/UPDATE/DELETE): no hay polÃ­tica directa para clientes.
+CREATE POLICY campuses_select_public ON campuses
+  FOR SELECT TO anon, authenticated
+  USING (
+    is_active = true
+    AND EXISTS (
+      SELECT 1 FROM institutions i
+      WHERE i.id = campuses.institution_id AND i.is_active = true
+    )
+  );
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 1.1: Se puede crear una instituciÃ³n (vÃ­a funciÃ³n de servidor, no directamente)
+-- SELECT * FROM institutions WHERE name = 'Universidad de Prueba';
+
+-- Prueba 1.2: email_domain es Ãºnico
+-- INSERT INTO institutions (name, email_domain) VALUES ('Dup', 'dup.test');
+-- INSERT INTO institutions (name, email_domain) VALUES ('Dup2', 'dup.test'); -- Debe fallar (UNIQUE)
+
+-- Prueba 1.3: Visitante no puede insertar instituciones directamente (RLS deniega)
+-- INSERT INTO institutions (name) VALUES ('Intruso'); -- Debe fallar con RLS
+
+-- Prueba 1.4: Visitante lee solo instituciones activas
+-- SELECT id, name FROM institutions WHERE is_active = true; -- Funciona para anon
+
+
+
+===== 002_profiles_memberships.sql =====
+-- MigraciÃ³n 002: Perfiles, membresÃ­as y roles
+-- PropÃ³sito: vincular usuarios autenticados a instituciones con roles.
+-- Dependencias: 001 (instituciones).
+-- Riesgos: medio. El campo id de profiles debe coincidir con auth.users.id.
+-- ReversiÃ³n: DROP TABLE memberships; DROP TABLE profiles_private; DROP TABLE profiles;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE profiles (
+  id uuid PRIMARY KEY,
+  full_name text,
+  avatar_url text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE profiles_private (
+  profile_id uuid PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+  email text NOT NULL,
+  phone text,
+  document_type text,
+  document_number text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE memberships (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES profiles(id),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  campus_id uuid REFERENCES campuses(id),
+  role text NOT NULL CHECK (role IN ('student', 'custody_staff', 'reviewer', 'institution_admin')),
+  is_primary boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_profiles_is_active ON profiles(is_active);
+CREATE INDEX idx_profiles_private_profile_id ON profiles_private(profile_id);
+CREATE INDEX idx_memberships_profile_id ON memberships(profile_id);
+CREATE INDEX idx_memberships_institution_id ON memberships(institution_id);
+CREATE INDEX idx_memberships_campus_id ON memberships(campus_id);
+CREATE INDEX idx_memberships_role ON memberships(role);
+CREATE INDEX idx_memberships_is_active ON memberships(is_active);
+
+-- Restricciones de unicidad parciales (M-2):
+-- PostgreSQL permite mÃºltiples NULL en columnas Ãºnicas, por tanto se usan
+-- dos Ã­ndices parciales para evitar duplicidad de membresÃ­as.
+CREATE UNIQUE INDEX idx_memberships_unique_no_campus
+  ON memberships(profile_id, institution_id)
+  WHERE campus_id IS NULL;
+
+CREATE UNIQUE INDEX idx_memberships_unique_with_campus
+  ON memberships(profile_id, institution_id, campus_id)
+  WHERE campus_id IS NOT NULL;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles_private ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
+
+-- profiles: lectura de propio perfil y campos pÃºblicos de miembros de la misma instituciÃ³n.
+CREATE POLICY profiles_select_own ON profiles
+  FOR SELECT TO authenticated
+  USING (auth.uid() = id);
+
+CREATE POLICY profiles_select_public_fields ON profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM memberships m1
+      JOIN memberships m2
+        ON m2.institution_id = m1.institution_id
+      WHERE m1.profile_id = auth.uid()
+        AND m1.is_active = true
+        AND m2.profile_id = profiles.id
+        AND m2.is_active = true
+    )
+  );
+
+CREATE POLICY profiles_update_own ON profiles
+  FOR UPDATE TO authenticated
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
+
+-- profiles_private: solo el propio perfil puede leer/escribir sus datos privados.
+CREATE POLICY profiles_private_select_own ON profiles_private
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id);
+
+CREATE POLICY profiles_private_update_own ON profiles_private
+  FOR UPDATE TO authenticated
+  USING (auth.uid() = profile_id)
+  WITH CHECK (auth.uid() = profile_id);
+
+-- memberships: lectura de propias membresÃ­as y de membresÃ­as de la misma instituciÃ³n (admin).
+CREATE POLICY memberships_select_own ON memberships
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id);
+
+CREATE POLICY memberships_select_institution_admin ON memberships
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m_admin
+      WHERE m_admin.profile_id = auth.uid()
+        AND m_admin.institution_id = memberships.institution_id
+        AND m_admin.role = 'institution_admin'
+        AND m_admin.is_active = true
+    )
+  );
+
+-- memberships: escritura (INSERT/UPDATE/DELETE) solo vÃ­a funciÃ³n de servidor.
+-- No hay polÃ­tica directa para clientes; RLS deniega por defecto.
+-- La funciÃ³n fn_create_membership valida membresÃ­a activa y rol antes de escribir.
+-- La funciÃ³n fn_deactivate_user desactiva perfiles y membresÃ­as de forma explÃ­cita.
+
+-- ============================================================
+-- SincronizaciÃ³n auth.users â†’ profiles
+-- ============================================================
+
+-- FunciÃ³n de servidor: crea perfil en profiles y profiles_private al registrarse un usuario en auth.
+-- No reactiva automÃ¡ticamente cuentas desactivadas previas; usa ON CONFLICT DO NOTHING
+-- para no sobrescribir un perfil existente con is_active = false.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, avatar_url, is_active)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', NULL),
+    COALESCE(NEW.raw_user_meta_data->>'avatar_url', NULL),
+    true
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO public.profiles_private (profile_id, email)
+  VALUES (NEW.id, NEW.email)
+  ON CONFLICT (profile_id) DO NOTHING;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: despuÃ©s de insertar un usuario en auth.users, crear su perfil.
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ============================================================
+-- DesactivaciÃ³n explÃ­cita de usuarios y membresÃ­as
+-- ============================================================
+
+-- FunciÃ³n de servidor: desactiva un perfil y sus membresÃ­as activas.
+-- Solo puede ser llamada por institution_admin de la misma instituciÃ³n que el perfil
+-- (desactiva solo las membresÃ­as de esa instituciÃ³n), o por platform_admin
+-- (desactivaciÃ³n global). No reactiva automÃ¡ticamente cuentas deshabilitadas.
+CREATE OR REPLACE FUNCTION public.fn_deactivate_user(
+  p_profile_id uuid
+) RETURNS void AS $$
+DECLARE
+  v_actor_institution_id uuid;
+  v_actor_role text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  ORDER BY CASE m.role WHEN 'platform_admin' THEN 0 WHEN 'institution_admin' THEN 1 ELSE 2 END
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- platform_admin puede desactivar globalmente; institution_admin solo en su instituciÃ³n
+  IF v_actor_role <> 'platform_admin' THEN
+    -- Verificar que el perfil objetivo tenga una membresÃ­a activa en la instituciÃ³n del actor
+    IF NOT EXISTS (
+      SELECT 1 FROM memberships m2
+      WHERE m2.profile_id = p_profile_id
+        AND m2.institution_id = v_actor_institution_id
+        AND m2.is_active = true
+    ) THEN
+      RAISE EXCEPTION 'El perfil no pertenece a la instituciÃ³n del actor';
+    END IF;
+
+    -- Desactivar solo las membresÃ­as del perfil dentro de la instituciÃ³n del actor
+    UPDATE public.memberships
+    SET is_active = false, updated_at = now()
+    WHERE profile_id = p_profile_id
+      AND institution_id = v_actor_institution_id;
+
+    -- Desactivar el perfil solo si no le quedan membresÃ­as activas en ninguna instituciÃ³n
+    IF NOT EXISTS (
+      SELECT 1 FROM memberships m3
+      WHERE m3.profile_id = p_profile_id AND m3.is_active = true
+    ) THEN
+      UPDATE public.profiles
+      SET is_active = false, updated_at = now()
+      WHERE id = p_profile_id;
+    END IF;
+  ELSE
+    -- platform_admin: desactivaciÃ³n global del perfil y todas sus membresÃ­as
+    UPDATE public.profiles
+    SET is_active = false, updated_at = now()
+    WHERE id = p_profile_id;
+
+    UPDATE public.memberships
+    SET is_active = false, updated_at = now()
+    WHERE profile_id = p_profile_id;
+  END IF;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_actor_institution_id, auth.uid(), 'user.deactivate',
+    'profile', p_profile_id::text,
+    jsonb_build_object('scope', v_actor_role),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_deactivate_user(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_deactivate_user(uuid) TO authenticated;
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 2.1: Un perfil puede tener membresÃ­as en varias instituciones con distintos roles.
+-- (Insertar dos membresÃ­as para el mismo profile_id con institution_id distintos)
+
+-- Prueba 2.2: No se permite auto-asignaciÃ³n de institution_admin.
+-- (Intentar INSERT en memberships con role='institution_admin' desde un cliente sin rol admin -- debe fallar)
+
+-- Prueba 2.3: Un usuario desactivado mediante fn_deactivate_user tiene is_active = false en profiles y memberships.
+-- (Ejecutar SELECT public.fn_deactivate_user('uuid'); verificar que profiles.is_active = false y memberships.is_active = false)
+
+-- Prueba 2.4: Un usuario no puede leer profiles_private de otro usuario.
+-- (SELECT * FROM profiles_private WHERE profile_id != auth.uid() -- debe devolver 0 filas)
+
+-- Prueba 2.5: RestricciÃ³n de unicidad parcial de membresÃ­as.
+-- (Intentar crear dos membresÃ­as con campus_id NULL para el mismo profile_id + institution_id -- debe fallar)
+
+-- Prueba 2.6: Un institution_admin de instituciÃ³n A no puede desactivar un perfil de instituciÃ³n B.
+-- (Ejecutar fn_deactivate_user con profile_id de instituciÃ³n B desde actor de instituciÃ³n A -- debe fallar)
+
+
+
+
+===== 003_categories_objects.sql =====
+-- MigraciÃ³n 003: CategorÃ­as y objetos
+-- PropÃ³sito: definir catÃ¡logo de categorÃ­as y el registro central de objetos perdidos/encontrados.
+-- Dependencias: 001 (instituciones), 002 (profiles para reporter_id).
+-- Riesgos: medio. El Ã­ndice GIN de texto en espaÃ±ol requiere la extensiÃ³n de bÃºsqueda de texto de PostgreSQL (disponible por defecto).
+-- ReversiÃ³n: DROP TABLE object_files; DROP TABLE objects; DROP TABLE categories;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE categories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid REFERENCES institutions(id) ON DELETE RESTRICT,
+  name text NOT NULL,
+  slug text NOT NULL,
+  description text,
+  sort_order integer,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- RestricciÃ³n Ãºnica: (institution_id, slug). Las categorÃ­as globales (institution_id IS NULL)
+-- comparten espacio de slugs; las de una instituciÃ³n son independientes.
+CREATE UNIQUE INDEX idx_categories_unique_slug ON categories(institution_id, slug);
+
+CREATE TABLE objects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  campus_id uuid,
+  category_id uuid REFERENCES categories(id),
+  reporter_id uuid NOT NULL REFERENCES profiles(id),
+  kind text NOT NULL CHECK (kind IN ('lost', 'found')),
+  title text NOT NULL,
+  description text NOT NULL,
+  zone text,
+  location text,
+  reported_at timestamptz NOT NULL DEFAULT now(),
+  state text NOT NULL CHECK (
+    kind IN ('lost', 'found') AND state IN (
+      'reported', 'under_review', 'in_custody', 'published', 'claimed',
+      'approved', 'delivery_prepared', 'delivered', 'closed', 'rejected', 'unclaimed'
+    )
+  ),
+  custody_point text,
+  reference_code text NOT NULL,
+  custody_received_at timestamptz,
+  custody_received_by uuid REFERENCES profiles(id),
+  published_at timestamptz,
+  published_by uuid REFERENCES profiles(id),
+  closed_at timestamptz,
+  closed_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Clave forÃ¡nea compuesta (C-1): cuando campus_id no es nulo, la sede debe pertenecer
+-- a la misma instituciÃ³n que el objeto. PostgreSQL soporta FK compuestas:
+-- (campus_id, institution_id) â†’ campuses(id, institution_id).
+-- Como campuses.id es PK, (id, institution_id) es automÃ¡ticamente Ãºnica.
+CREATE INDEX idx_campuses_id_institution_id ON campuses(id, institution_id);
+
+ALTER TABLE objects
+  ADD CONSTRAINT fk_objects_campus_institution
+  FOREIGN KEY (campus_id, institution_id)
+  REFERENCES campuses(id, institution_id);
+
+-- RestricciÃ³n Ãºnica: reference_code dentro de cada instituciÃ³n.
+CREATE UNIQUE INDEX idx_objects_unique_reference_code
+  ON objects(institution_id, reference_code);
+
+CREATE TABLE object_files (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+  storage_path text NOT NULL,
+  url text,
+  mime_type text NOT NULL,
+  file_size integer,
+  is_cover boolean NOT NULL DEFAULT false,
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  uploaded_by uuid REFERENCES profiles(id)
+);
+
+-- Una sola portada por objeto.
+CREATE UNIQUE INDEX idx_object_files_unique_cover
+  ON object_files(object_id)
+  WHERE is_cover = true;
+
+-- Ãndices
+CREATE INDEX idx_objects_institution_id ON objects(institution_id);
+CREATE INDEX idx_objects_state ON objects(state);
+CREATE INDEX idx_objects_kind ON objects(kind);
+CREATE INDEX idx_objects_reference_code ON objects(reference_code);
+CREATE INDEX idx_objects_composite_institution_state ON objects(institution_id, state);
+CREATE INDEX idx_object_files_object_id ON object_files(object_id);
+CREATE INDEX idx_object_files_is_cover ON object_files(is_cover);
+
+-- Ãndice GIN de bÃºsqueda en espaÃ±ol sobre title, description, location, zone.
+CREATE INDEX idx_objects_search_gin ON objects
+  USING GIN(to_tsvector('spanish', title || ' ' || description || ' ' || location || ' ' || zone));
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE object_files ENABLE ROW LEVEL SECURITY;
+
+-- categories: lectura pÃºblica SOLO de categorÃ­as globales activas (institution_id IS NULL).
+-- Las categorÃ­as institucionales (institution_id IS NOT NULL) solo son visibles
+-- a miembros autenticados de esa misma instituciÃ³n.
+CREATE POLICY categories_select_public_global ON categories
+  FOR SELECT TO anon, authenticated
+  USING (is_active = true AND institution_id IS NULL);
+
+CREATE POLICY categories_select_institution ON categories
+  FOR SELECT TO authenticated
+  USING (
+    institution_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = categories.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- objects: lectura pÃºblica (visitante) de objetos publicados en instituciones activas.
+-- RLS filtra filas, no columnas. La proyecciÃ³n de columnas pÃºblicas se gestiona
+-- en la capa de aplicaciÃ³n/servidor.
+CREATE POLICY objects_select_public ON objects
+  FOR SELECT TO anon, authenticated
+  USING (
+    state = 'published'
+    AND EXISTS (
+      SELECT 1 FROM institutions i
+      WHERE i.id = objects.institution_id AND i.is_active = true
+    )
+  );
+
+-- objects: lectura restringida para usuarios autenticados de la misma instituciÃ³n.
+CREATE POLICY objects_select_authenticated ON objects
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = objects.institution_id
+        AND m.is_active = true
+    )
+    AND (
+      state = 'published'
+      OR reporter_id = auth.uid()
+      OR EXISTS (
+        SELECT 1 FROM memberships m2
+        WHERE m2.profile_id = auth.uid()
+          AND m2.institution_id = objects.institution_id
+          AND m2.is_active = true
+          AND m2.role IN ('custody_staff', 'reviewer', 'institution_admin')
+      )
+    )
+  );
+
+-- objects: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_create_object en migraciÃ³n 006).
+-- No hay polÃ­tica INSERT directa para clientes; RLS deniega por defecto.
+
+-- objects: actualizaciÃ³n. El reporter puede editar su propio reporte solo en estado 'reported'.
+-- Cambios de estado solo por roles autorizados (vÃ­a funciÃ³n de servidor).
+CREATE POLICY objects_update_reporter ON objects
+  FOR UPDATE TO authenticated
+  USING (
+    reporter_id = auth.uid()
+    AND state = 'reported'
+  )
+  WITH CHECK (
+    reporter_id = auth.uid()
+    AND state = 'reported'
+  );
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 3.1: BÃºsqueda insensible a acentos.
+-- SELECT * FROM objects WHERE to_tsvector('spanish', title) @@ to_tsquery('spanish', 'audifonos');
+
+-- Prueba 3.2: reference_code es Ãºnico por instituciÃ³n.
+-- (Insertar dos objetos con mismo reference_code y mismo institution_id -- debe fallar)
+
+-- Prueba 3.3: Visitante no lee objetos no publicados.
+-- SELECT * FROM objects WHERE state != 'published'; -- debe devolver 0 filas para anon
+
+-- Prueba 3.4: Visitante no lee categorÃ­as institucionales (solo globales).
+-- SELECT * FROM categories WHERE institution_id IS NOT NULL; -- debe devolver 0 filas para anon
+
+-- Prueba 3.5: Clave forÃ¡nea compuesta: campus de otra instituciÃ³n no puede asociarse al objeto.
+-- (Intentar INSERT con campus_id de instituciÃ³n B e institution_id de instituciÃ³n A -- debe fallar)
+
+
+
+===== 004_custody_recovery.sql =====
+-- MigraciÃ³n 004: Custodia y reclamaciones
+-- PropÃ³sito: registrar recepciÃ³n fÃ­sica, custodia y solicitudes de recuperaciÃ³n con decisiones manuales.
+-- Dependencias: 003 (objetos, object_files), 002 (profiles).
+-- Riesgos: medio. La transiciÃ³n under_review -> in_custody debe validarse en trigger o funciÃ³n de servidor.
+-- ReversiÃ³n: DROP TABLE recovery_reviews; DROP TABLE recovery_requests; DROP TABLE custody_records; DROP TABLE audit_log;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE custody_records (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id),
+  received_by uuid NOT NULL REFERENCES profiles(id),
+  received_at timestamptz NOT NULL DEFAULT now(),
+  custody_point text NOT NULL,
+  condition_notes text,
+  received_from text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Un objeto solo tiene un registro de custodia activo.
+CREATE UNIQUE INDEX idx_custody_records_unique_object ON custody_records(object_id);
+
+CREATE TABLE recovery_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_id uuid NOT NULL REFERENCES objects(id),
+  claimant_id uuid NOT NULL REFERENCES profiles(id),
+  claimed_at timestamptz NOT NULL DEFAULT now(),
+  description text NOT NULL,
+  contact_preference text,
+  state text NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'cancelled')),
+  reviewed_by uuid REFERENCES profiles(id),
+  reviewed_at timestamptz,
+  review_notes text,
+  decision_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Un objeto publicado puede tener varias solicitudes (histÃ³rico), pero solo una activa (pending) a la vez.
+CREATE UNIQUE INDEX idx_recovery_requests_unique_pending
+  ON recovery_requests(object_id)
+  WHERE state = 'pending';
+
+CREATE TABLE recovery_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recovery_request_id uuid NOT NULL REFERENCES recovery_requests(id),
+  reviewer_id uuid NOT NULL REFERENCES profiles(id),
+  decision text NOT NULL CHECK (decision IN ('approved', 'rejected', 'needs_more_info')),
+  notes text,
+  decided_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE audit_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  institution_id uuid NOT NULL REFERENCES institutions(id),
+  actor_id uuid REFERENCES profiles(id),
+  action text NOT NULL,
+  entity_type text NOT NULL,
+  entity_id text NOT NULL,
+  old_values jsonb,
+  new_values jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_custody_records_object_id ON custody_records(object_id);
+CREATE INDEX idx_custody_records_received_by ON custody_records(received_by);
+CREATE INDEX idx_custody_records_received_at ON custody_records(received_at);
+CREATE INDEX idx_recovery_requests_object_id ON recovery_requests(object_id);
+CREATE INDEX idx_recovery_requests_claimant_id ON recovery_requests(claimant_id);
+CREATE INDEX idx_recovery_requests_state ON recovery_requests(state);
+CREATE INDEX idx_recovery_requests_claimed_at ON recovery_requests(claimed_at);
+CREATE INDEX idx_recovery_reviews_recovery_request_id ON recovery_reviews(recovery_request_id);
+CREATE INDEX idx_recovery_reviews_reviewer_id ON recovery_reviews(reviewer_id);
+CREATE INDEX idx_recovery_reviews_decision ON recovery_reviews(decision);
+CREATE INDEX idx_recovery_reviews_decided_at ON recovery_reviews(decided_at);
+CREATE INDEX idx_audit_log_institution_id ON audit_log(institution_id);
+CREATE INDEX idx_audit_log_actor_id ON audit_log(actor_id);
+CREATE INDEX idx_audit_log_action ON audit_log(action);
+CREATE INDEX idx_audit_log_created_at ON audit_log(created_at);
+
+-- ============================================================
+-- Funciones y triggers de integridad institucional (C-1)
+-- ============================================================
+
+-- FunciÃ³n: valida que received_by tenga membresÃ­a activa en la misma instituciÃ³n que el objeto.
+CREATE OR REPLACE FUNCTION public.validate_custody_institution()
+RETURNS TRIGGER AS $$
+DECLARE
+  object_institution_id uuid;
+  receiver_institution_id uuid;
+BEGIN
+  -- Obtener instituciÃ³n del objeto
+  SELECT institution_id INTO object_institution_id
+  FROM objects WHERE id = NEW.object_id;
+
+  -- Obtener instituciÃ³n del receptor a travÃ©s de su membresÃ­a activa
+  SELECT institution_id INTO receiver_institution_id
+  FROM memberships
+  WHERE profile_id = NEW.received_by
+    AND is_active = true
+  LIMIT 1;
+
+  IF receiver_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  IF receiver_institution_id <> object_institution_id THEN
+    RAISE EXCEPTION 'El personal de custodia no pertenece a la misma instituciÃ³n que el objeto';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: validar instituciÃ³n antes de crear un registro de custodia.
+DROP TRIGGER IF EXISTS trg_validate_custody_institution ON custody_records;
+CREATE TRIGGER trg_validate_custody_institution
+  BEFORE INSERT ON custody_records
+  FOR EACH ROW EXECUTE FUNCTION public.validate_custody_institution();
+
+-- FunciÃ³n: valida que un objeto 'found' no se publique sin registro de custodia.
+CREATE OR REPLACE FUNCTION public.validate_object_publish()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.state = 'published' AND OLD.state <> 'published' THEN
+    IF NEW.kind = 'found' THEN
+      IF NOT EXISTS (SELECT 1 FROM custody_records WHERE object_id = NEW.id) THEN
+        RAISE EXCEPTION 'Un objeto encontrado debe tener registro de custodia antes de publicarse';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+-- Trigger: validar publicaciÃ³n de objetos.
+DROP TRIGGER IF EXISTS trg_validate_object_publish ON objects;
+CREATE TRIGGER trg_validate_object_publish
+  BEFORE UPDATE OF state ON objects
+  FOR EACH ROW
+  WHEN (NEW.state = 'published' AND OLD.state IS DISTINCT FROM NEW.state)
+  EXECUTE FUNCTION public.validate_object_publish();
+
+-- FunciÃ³n: crear registro de custodia (solo custody_staff de la misma instituciÃ³n).
+CREATE OR REPLACE FUNCTION public.fn_create_custody_record(
+  p_object_id uuid,
+  p_custody_point text,
+  p_condition_notes text,
+  p_received_from text
+) RETURNS uuid AS $$
+DECLARE
+  v_custody_record_id uuid;
+  v_object_kind text;
+  v_object_institution_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y kind del objeto
+  SELECT o.institution_id, o.kind INTO v_object_institution_id, v_object_kind
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Validar que el actor es custody_staff en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+    AND m.role = 'custody_staff'
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no es personal de custodia en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Solo objetos found pueden entrar en custodia
+  IF v_object_kind <> 'found' THEN
+    RAISE EXCEPTION 'Solo objetos encontrados pueden registrar custodia fÃ­sica';
+  END IF;
+
+  -- Validar que no existe ya custodia para este objeto
+  IF EXISTS (SELECT 1 FROM custody_records WHERE object_id = p_object_id) THEN
+    RAISE EXCEPTION 'El objeto ya tiene registro de custodia';
+  END IF;
+
+  -- Insertar custodia
+  INSERT INTO custody_records (object_id, received_by, custody_point, condition_notes, received_from, created_at)
+  VALUES (p_object_id, auth.uid(), p_custody_point, p_condition_notes, p_received_from, now())
+  RETURNING id INTO v_custody_record_id;
+
+  -- Actualizar estado del objeto a in_custody
+  UPDATE objects SET state = 'in_custody', updated_at = now() WHERE id = p_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'object.custody_receive',
+    'object', p_object_id::text,
+    jsonb_build_object('custody_point', p_custody_point, 'condition_notes', p_condition_notes),
+    now()
+  );
+
+  RETURN v_custody_record_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_custody_record(uuid, text, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_custody_record(uuid, text, text, text) TO authenticated;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE custody_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recovery_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recovery_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+
+-- custody_records: lectura solo personal autorizado de la misma instituciÃ³n.
+CREATE POLICY custody_records_select_institution ON custody_records
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN objects o ON o.id = custody_records.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+        AND m.role IN ('custody_staff', 'reviewer', 'institution_admin')
+    )
+  );
+
+-- custody_records: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_create_custody_record).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- custody_records: actualizaciÃ³n solo creador reciente o admin (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica UPDATE directa para clientes.
+
+-- recovery_requests: lectura propia del reclamante; personal autorizado de la misma instituciÃ³n lee todas.
+CREATE POLICY recovery_requests_select_claimant ON recovery_requests
+  FOR SELECT TO authenticated
+  USING (claimant_id = auth.uid());
+
+CREATE POLICY recovery_requests_select_institution ON recovery_requests
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN objects o ON o.id = recovery_requests.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- recovery_requests: inserciÃ³n solo estudiantes con membresÃ­a activa sobre objetos publicados de su instituciÃ³n.
+-- VerificaciÃ³n explÃ­cita de instituciÃ³n sin LIMIT 1 ambiguo.
+CREATE POLICY recovery_requests_insert_student ON recovery_requests
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    claimant_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM memberships m
+      WHERE m.profile_id = auth.uid()
+        AND m.role = 'student'
+        AND m.is_active = true
+    )
+    AND EXISTS (
+      SELECT 1 FROM objects o
+      JOIN memberships mo ON mo.profile_id = auth.uid()
+      WHERE o.id = recovery_requests.object_id
+        AND o.state = 'published'
+        AND o.institution_id = mo.institution_id
+        AND mo.is_active = true
+    )
+  );
+
+-- recovery_requests: actualizaciÃ³n. El claimant puede cancelar su propia solicitud en estado 'pending'.
+CREATE POLICY recovery_requests_update_claimant ON recovery_requests
+  FOR UPDATE TO authenticated
+  USING (
+    claimant_id = auth.uid()
+    AND state = 'pending'
+  )
+  WITH CHECK (
+    claimant_id = auth.uid()
+    AND state IN ('cancelled')
+  );
+
+-- recovery_requests: cambios de estado (approved/rejected) solo vÃ­a funciÃ³n de servidor (reviewer).
+-- No hay polÃ­tica UPDATE directa para cambiar a approved/rejected desde el cliente.
+
+-- recovery_reviews: lectura del reclamante de sus propias solicitudes; personal autorizado lee todas.
+CREATE POLICY recovery_reviews_select_claimant ON recovery_reviews
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM recovery_requests rr
+      WHERE rr.id = recovery_reviews.recovery_request_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+CREATE POLICY recovery_reviews_select_institution ON recovery_reviews
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN recovery_requests rr ON rr.id = recovery_reviews.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- recovery_reviews: inserciÃ³n solo reviewer o institution_admin (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica INSERT directa para clientes.
+-- recovery_reviews: inmutable (no UPDATE/DELETE directo).
+
+-- audit_log: solo lectura para roles humanos; inserciÃ³n solo mediante funciones de servidor.
+-- No hay polÃ­tica INSERT/UPDATE/DELETE para clientes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 4.1: Una reclamaciÃ³n no se aprueba automÃ¡ticamente.
+-- (Intentar UPDATE state='approved' directamente en recovery_requests -- debe fallar vÃ­a RLS)
+
+-- Prueba 4.2: Objeto 'found' sin custody_records no puede publicarse.
+-- (Intentar UPDATE objects SET state='published' WHERE kind='found' sin custody_records -- debe fallar vÃ­a trigger)
+
+-- Prueba 4.3: No hay dos solicitudes 'pending' para el mismo objeto.
+-- (Intentar crear dos solicitudes con state='pending' para el mismo object_id -- debe fallar por Ã­ndice parcial)
+
+-- Prueba 4.4: Personal de custodia de instituciÃ³n A no puede crear custodia para objeto de instituciÃ³n B.
+-- (Intentar INSERT en custody_records con object_id de instituciÃ³n B y received_by de instituciÃ³n A -- debe fallar vÃ­a trigger)
+
+-- Prueba 4.5: Estudiante no puede crear custodia (solo custody_staff).
+-- (Ejecutar fn_create_custody_record como estudiante -- debe fallar)
+
+
+
+===== 005_deliveries_qr.sql =====
+-- MigraciÃ³n 005: Entregas y validaciÃ³n QR
+-- PropÃ³sito: gestionar entregas fÃ­sicas verificadas mediante QR de un solo uso.
+-- Dependencias: 004 (recovery_requests, audit_log).
+-- Riesgos: alto. La operaciÃ³n atÃ³mica de confirmaciÃ³n de entrega debe implementarse como funciÃ³n de servidor.
+-- ReversiÃ³n: DROP TABLE delivery_qr_attempts; DROP TABLE deliveries;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE deliveries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recovery_request_id uuid NOT NULL REFERENCES recovery_requests(id),
+  prepared_by uuid NOT NULL REFERENCES profiles(id),
+  prepared_at timestamptz NOT NULL DEFAULT now(),
+  delivery_point text NOT NULL,
+  qr_token_hash text NOT NULL,
+  qr_expires_at timestamptz NOT NULL,
+  qr_revoked_at timestamptz,
+  delivered_at timestamptz,
+  delivered_by uuid REFERENCES profiles(id),
+  delivery_confirmed_at timestamptz,
+  confirmation_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Una entrega por reclamaciÃ³n aprobada.
+CREATE UNIQUE INDEX idx_deliveries_unique_recovery_request ON deliveries(recovery_request_id);
+
+CREATE TABLE delivery_qr_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  delivery_id uuid NOT NULL REFERENCES deliveries(id),
+  attempted_at timestamptz NOT NULL DEFAULT now(),
+  success boolean NOT NULL,
+  failure_reason text CHECK (failure_reason IN (
+    'expired', 'revoked', 'already_used', 'invalid', 'membership_missing', 'hash_mismatch'
+  )),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ãndices
+CREATE INDEX idx_deliveries_recovery_request_id ON deliveries(recovery_request_id);
+CREATE INDEX idx_deliveries_qr_token_hash ON deliveries(qr_token_hash);
+CREATE INDEX idx_deliveries_qr_expires_at ON deliveries(qr_expires_at);
+CREATE INDEX idx_deliveries_delivered_at ON deliveries(delivered_at);
+CREATE INDEX idx_delivery_qr_attempts_delivery_id ON delivery_qr_attempts(delivery_id);
+CREATE INDEX idx_delivery_qr_attempts_success ON delivery_qr_attempts(success);
+
+-- ============================================================
+-- Funciones privilegiadas (SECURITY DEFINER)
+-- ============================================================
+
+-- FunciÃ³n: preparar una entrega (generar QR con token hash).
+-- Solo custody_staff o institution_admin de la misma instituciÃ³n, sobre reclamaciÃ³n aprobada.
+-- Valida token no vacÃ­o y expiraciÃ³n futura.
+-- Actualiza objects.state a 'delivery_prepared' dentro de la misma transacciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_prepare_delivery(
+  p_recovery_request_id uuid,
+  p_delivery_point text,
+  p_qr_expires_at timestamptz,
+  p_qr_token_plain text
+) RETURNS uuid AS $$
+DECLARE
+  v_delivery_id uuid;
+  v_object_institution_id uuid;
+  v_object_id uuid;
+  v_preparer_institution_id uuid;
+  v_qr_token_hash text;
+BEGIN
+  -- Validar que el usuario estÃ¡ autenticado
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Validar token no vacÃ­o
+  IF p_qr_token_plain IS NULL OR length(trim(p_qr_token_plain)) = 0 THEN
+    RAISE EXCEPTION 'El token QR no puede estar vacÃ­o';
+  END IF;
+
+  -- Validar expiraciÃ³n futura
+  IF p_qr_expires_at <= now() THEN
+    RAISE EXCEPTION 'La fecha de expiraciÃ³n del QR debe ser futura';
+  END IF;
+
+  -- Obtener instituciÃ³n y id del objeto a travÃ©s de la reclamaciÃ³n
+  SELECT o.institution_id, o.id INTO v_object_institution_id, v_object_id
+  FROM recovery_requests rr
+  JOIN objects o ON o.id = rr.object_id
+  WHERE rr.id = p_recovery_request_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'ReclamaciÃ³n no encontrada';
+  END IF;
+
+  -- Validar que el preparador tiene membresÃ­a activa en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_preparer_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_preparer_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no es personal autorizado en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n estÃ¡ aprobada
+  IF NOT EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE id = p_recovery_request_id AND state = 'approved'
+  ) THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n no estÃ¡ aprobada';
+  END IF;
+
+  -- Validar que no existe ya una entrega para esta reclamaciÃ³n
+  IF EXISTS (SELECT 1 FROM deliveries WHERE recovery_request_id = p_recovery_request_id) THEN
+    RAISE EXCEPTION 'Ya existe una entrega para esta reclamaciÃ³n';
+  END IF;
+
+  -- Calcular hash del token QR (nunca almacenar el token plano)
+  v_qr_token_hash := encode(digest(p_qr_token_plain, 'sha256'), 'hex');
+
+  -- Insertar entrega
+  INSERT INTO deliveries (
+    recovery_request_id, prepared_by, prepared_at, delivery_point,
+    qr_token_hash, qr_expires_at, created_at, updated_at
+  )
+  VALUES (
+    p_recovery_request_id, auth.uid(), now(), p_delivery_point,
+    v_qr_token_hash, p_qr_expires_at, now(), now()
+  )
+  RETURNING id INTO v_delivery_id;
+
+  -- Actualizar estado del objeto a delivery_prepared dentro de la misma transacciÃ³n
+  UPDATE objects
+  SET state = 'delivery_prepared', updated_at = now()
+  WHERE id = v_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'delivery.prepare',
+    'delivery', v_delivery_id::text,
+    jsonb_build_object('delivery_point', p_delivery_point, 'qr_expires_at', p_qr_expires_at),
+    now()
+  );
+
+  RETURN v_delivery_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_prepare_delivery(uuid, text, timestamptz, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_prepare_delivery(uuid, text, timestamptz, text) TO authenticated;
+
+-- FunciÃ³n: confirmar entrega fÃ­sica mediante verificaciÃ³n QR.
+-- OperaciÃ³n atÃ³mica: UPDATE condicional WHERE delivered_at IS NULL.
+-- Solo custody_staff o institution_admin de la misma instituciÃ³n.
+-- Valida que la reclamaciÃ³n siga aprobada y que el objeto estÃ© en estado esperado.
+-- Actualiza objects.state a 'delivered' dentro de la misma transacciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_confirm_delivery_qr(
+  p_delivery_id uuid,
+  p_token_plain text
+) RETURNS boolean AS $$
+DECLARE
+  v_delivery_institution_id uuid;
+  v_object_id uuid;
+  v_object_state text;
+  v_recovery_state text;
+  v_actor_institution_id uuid;
+  v_token_hash text;
+  v_rows_updated integer;
+BEGIN
+  -- Validar autenticaciÃ³n
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n, objeto y estado de la reclamaciÃ³n de la entrega
+  SELECT o.institution_id, o.id, o.state, rr.state INTO
+    v_delivery_institution_id, v_object_id, v_object_state, v_recovery_state
+  FROM deliveries d
+  JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+  JOIN objects o ON o.id = rr.object_id
+  WHERE d.id = p_delivery_id;
+
+  IF v_delivery_institution_id IS NULL THEN
+    -- No revelar si el delivery_id existe (respuesta genÃ©rica)
+    RAISE EXCEPTION 'Entrega no encontrada o no autorizada';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n siga aprobada
+  IF v_recovery_state <> 'approved' THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n asociada no estÃ¡ aprobada';
+  END IF;
+
+  -- Validar que el objeto estÃ© en estado esperado (delivery_prepared)
+  IF v_object_state <> 'delivery_prepared' THEN
+    RAISE EXCEPTION 'El objeto no estÃ¡ en estado de entrega preparada';
+  END IF;
+
+  -- Validar que el actor tiene membresÃ­a activa en la misma instituciÃ³n
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_delivery_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos en la instituciÃ³n de la entrega';
+  END IF;
+
+  -- Calcular hash del token proporcionado
+  v_token_hash := encode(digest(p_token_plain, 'sha256'), 'hex');
+
+  -- ConfirmaciÃ³n atÃ³mica: solo una fila puede ser actualizada (delivered_at IS NULL)
+  UPDATE deliveries
+  SET delivered_at = now(),
+      delivered_by = auth.uid(),
+      delivery_confirmed_at = now(),
+      updated_at = now()
+  WHERE id = p_delivery_id
+    AND delivered_at IS NULL
+    AND qr_revoked_at IS NULL
+    AND qr_expires_at > now()
+    AND qr_token_hash = v_token_hash;
+
+  GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+
+  IF v_rows_updated = 0 THEN
+    -- Registrar intento fallido (sin exponer token ni datos sensibles)
+    INSERT INTO public.delivery_qr_attempts (
+      delivery_id, attempted_at, success, failure_reason, created_at
+    )
+    VALUES (
+      p_delivery_id, now(), false,
+      CASE
+        WHEN NOT EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_token_hash = v_token_hash) THEN 'hash_mismatch'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND delivered_at IS NOT NULL) THEN 'already_used'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_revoked_at IS NOT NULL) THEN 'revoked'
+        WHEN EXISTS (SELECT 1 FROM deliveries WHERE id = p_delivery_id AND qr_expires_at <= now()) THEN 'expired'
+        ELSE 'invalid'
+      END,
+      now()
+    );
+
+    INSERT INTO public.audit_log (
+      institution_id, actor_id, action, entity_type, entity_id,
+      new_values, created_at
+    )
+    VALUES (
+      v_delivery_institution_id, auth.uid(), 'delivery.confirm.failed',
+      'delivery', p_delivery_id::text,
+      jsonb_build_object('reason', 'qr_validation_failed'),
+      now()
+    );
+
+    RETURN false;
+  END IF;
+
+  -- Actualizar estado del objeto a delivered dentro de la misma transacciÃ³n
+  UPDATE objects
+  SET state = 'delivered', updated_at = now()
+  WHERE id = v_object_id;
+
+  -- Registrar intento exitoso
+  INSERT INTO public.delivery_qr_attempts (
+    delivery_id, attempted_at, success, failure_reason, created_at
+  )
+  VALUES (p_delivery_id, now(), true, NULL, now());
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_delivery_institution_id, auth.uid(), 'delivery.confirm',
+    'delivery', p_delivery_id::text,
+    jsonb_build_object('delivered_at', now(), 'delivered_by', auth.uid()),
+    now()
+  );
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_confirm_delivery_qr(uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_confirm_delivery_qr(uuid, text) TO authenticated;
+
+-- FunciÃ³n: revocar un QR antes de la entrega fÃ­sica.
+CREATE OR REPLACE FUNCTION public.fn_revoke_qr(
+  p_delivery_id uuid
+) RETURNS boolean AS $$
+DECLARE
+  v_delivery_institution_id uuid;
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  SELECT o.institution_id, o.id INTO v_delivery_institution_id, v_object_id
+  FROM deliveries d
+  JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+  JOIN objects o ON o.id = rr.object_id
+  WHERE d.id = p_delivery_id AND d.delivered_at IS NULL;
+
+  IF v_delivery_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Entrega no encontrada o ya entregada';
+  END IF;
+
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_delivery_institution_id
+    AND m.is_active = true
+    AND m.role IN ('custody_staff', 'institution_admin')
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos para revocar en esta instituciÃ³n';
+  END IF;
+
+  UPDATE deliveries
+  SET qr_revoked_at = now(), updated_at = now()
+  WHERE id = p_delivery_id AND qr_revoked_at IS NULL AND delivered_at IS NULL;
+
+  -- Actualizar estado del objeto a delivery_prepared (vuelto a preparar)
+  UPDATE objects
+  SET state = 'delivery_prepared', updated_at = now()
+  WHERE id = v_object_id;
+
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_delivery_institution_id, auth.uid(), 'delivery.revoke',
+    'delivery', p_delivery_id::text,
+    jsonb_build_object('revoked_at', now()),
+    now()
+  );
+
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_revoke_qr(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_revoke_qr(uuid) TO authenticated;
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_qr_attempts ENABLE ROW LEVEL SECURITY;
+
+-- deliveries: lectura propia del reclamante; personal autorizado de la misma instituciÃ³n.
+CREATE POLICY deliveries_select_claimant ON deliveries
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM recovery_requests rr
+      WHERE rr.id = deliveries.recovery_request_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+CREATE POLICY deliveries_select_institution ON deliveries
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN recovery_requests rr ON rr.id = deliveries.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+-- deliveries: inserciÃ³n solo vÃ­a funciÃ³n de servidor (fn_prepare_delivery).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- deliveries: actualizaciÃ³n (confirmar entrega) solo vÃ­a funciÃ³n de servidor (fn_confirm_delivery_qr).
+-- No hay polÃ­tica UPDATE directa para clientes.
+
+-- delivery_qr_attempts: lectura personal autorizado de la misma instituciÃ³n; reclamante ve sus propios intentos.
+CREATE POLICY delivery_qr_attempts_select_institution ON delivery_qr_attempts
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM memberships m
+      JOIN deliveries d ON d.id = delivery_qr_attempts.delivery_id
+      JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+      JOIN objects o ON o.id = rr.object_id
+      WHERE m.profile_id = auth.uid()
+        AND m.institution_id = o.institution_id
+        AND m.is_active = true
+    )
+  );
+
+CREATE POLICY delivery_qr_attempts_select_claimant ON delivery_qr_attempts
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM deliveries d
+      JOIN recovery_requests rr ON rr.id = d.recovery_request_id
+      WHERE d.id = delivery_qr_attempts.delivery_id
+        AND rr.claimant_id = auth.uid()
+    )
+  );
+
+-- delivery_qr_attempts: inserciÃ³n solo el sistema (vÃ­a funciÃ³n de servidor).
+-- No hay polÃ­tica INSERT directa para clientes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 5.1: Uso Ãºnico de QR (dos intentos simultÃ¡neos, solo uno tiene Ã©xito).
+-- (Ejecutar fn_confirm_delivery_qr dos veces concurrentemente con mismo delivery_id y token -- una true, otra false)
+
+-- Prueba 5.2: QR vencido no puede confirmarse.
+-- (fn_confirm_delivery_qr con qr_expires_at en el pasado -- debe devolver false)
+
+-- Prueba 5.3: QR reutilizado (ya entregado) no puede confirmarse.
+-- (fn_confirm_delivery_qr despuÃ©s de delivered_at establecido -- debe devolver false)
+
+-- Prueba 5.4: Estudiante no puede escribir delivered_at directamente.
+-- (UPDATE deliveries SET delivered_at = now() -- debe fallar con RLS)
+
+-- Prueba 5.5: Token falsificado no coincide con el hash.
+-- (fn_confirm_delivery_qr con token incorrecto -- debe devolver false)
+
+-- Prueba 5.6: El token plano nunca se almacena ni se registra en logs.
+-- (SELECT qr_token_hash FROM deliveries -- debe ser un hash, nunca el token plano)
+
+-- Prueba 5.7: Token vacÃ­o o expiraciÃ³n pasada al preparar entrega son rechazados.
+-- (fn_prepare_delivery con token vacÃ­o o qr_expires_at <= now() -- debe fallar)
+
+
+
+===== 006_audit_platform_admin.sql =====
+-- MigraciÃ³n 006: AuditorÃ­a, administradores globales y funciones de servidor faltantes
+-- PropÃ³sito: trazabilidad inmutable, tabla de administradores globales y funciones de servidor
+-- para crear objetos, membresÃ­as, cambiar estados y revisar reclamaciones.
+-- Dependencias: 001 (instituciones), 002 (profiles), 003 (objetos), 004 (custodia, reclamaciones, audit_log), 005 (entregas).
+-- Riesgos: bajo.
+-- ReversiÃ³n: DROP TABLE platform_admins;
+
+-- ============================================================
+-- Tablas
+-- ============================================================
+
+CREATE TABLE platform_admins (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES profiles(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true
+);
+
+CREATE UNIQUE INDEX idx_platform_admins_unique_profile ON platform_admins(profile_id)
+  WHERE is_active = true;
+
+-- Ãndices
+CREATE INDEX idx_platform_admins_profile_id ON platform_admins(profile_id);
+
+-- ============================================================
+-- Row Level Security (RLS)
+-- ============================================================
+
+ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
+
+-- platform_admins: lectura de propia fila solo por el perfil correspondiente (platform_admin).
+-- Ninguna polÃ­tica permite a un autenticado leer toda la tabla.
+CREATE POLICY platform_admins_select_own ON platform_admins
+  FOR SELECT TO authenticated
+  USING (auth.uid() = profile_id AND is_active = true);
+
+-- platform_admins: ninguna polÃ­tica INSERT/UPDATE/DELETE directa para clientes.
+-- RLS deniega por defecto. El rol platform_admin se gestiona Ãºnicamente vÃ­a funciones
+-- de servidor o inserciÃ³n directa por plataforma (service_role), nunca desde el navegador.
+
+-- audit_log: revisiÃ³n de consistencia. Las polÃ­ticas ya creadas en 004 se mantienen:
+-- - lectura de auditorÃ­a propia, de la instituciÃ³n (admin), o global (platform_admin)
+-- - escritura: solo el sistema (triggers o funciones de servidor). Nunca un cliente.
+
+-- ============================================================
+-- FunciÃ³n: verificar si un perfil es platform_admin (activo).
+-- SECURITY DEFINER: lee platform_admins sin exponer la tabla directamente.
+-- Puede ser llamada por institution_admin para verificar roles sin RLS recursion.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.fn_is_platform_admin(
+  p_profile_id uuid
+) RETURNS boolean AS $$
+DECLARE
+  v_is_admin boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM platform_admins
+    WHERE profile_id = p_profile_id AND is_active = true
+  ) INTO v_is_admin;
+
+  RETURN COALESCE(v_is_admin, false);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_is_platform_admin(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_is_platform_admin(uuid) TO authenticated;
+
+-- ============================================================
+-- Funciones de servidor faltantes (SECURITY DEFINER)
+-- ============================================================
+
+-- FunciÃ³n: crear objeto (reportar perdido/encontrado).
+-- Cualquier usuario autenticado con membresÃ­a activa puede crear un objeto en su instituciÃ³n.
+-- El institution_id se inyecta desde la membresÃ­a, no del cliente.
+CREATE OR REPLACE FUNCTION public.fn_create_object(
+  p_kind text,
+  p_title text,
+  p_description text,
+  p_zone text,
+  p_location text,
+  p_category_id uuid,
+  p_reference_code text
+) RETURNS uuid AS $$
+DECLARE
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  IF p_kind NOT IN ('lost', 'found') THEN
+    RAISE EXCEPTION 'Tipo de objeto invÃ¡lido: debe ser lost o found';
+  END IF;
+
+  -- Obtener instituciÃ³n del actor a travÃ©s de membresÃ­a activa
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- Validar que la categorÃ­a pertenezca a la instituciÃ³n o sea global
+  IF p_category_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM categories c
+      WHERE c.id = p_category_id
+        AND (c.institution_id IS NULL OR c.institution_id = v_actor_institution_id)
+        AND c.is_active = true
+    ) THEN
+      RAISE EXCEPTION 'CategorÃ­a no vÃ¡lida o no disponible para esta instituciÃ³n';
+    END IF;
+  END IF;
+
+  -- Insertar objeto con institution_id inyectado desde membresÃ­a
+  INSERT INTO objects (
+    institution_id, kind, title, description, zone, location,
+    category_id, reporter_id, reported_at, state, reference_code,
+    created_at, updated_at
+  )
+  VALUES (
+    v_actor_institution_id, p_kind, p_title, p_description, p_zone, p_location,
+    p_category_id, auth.uid(), now(), 'reported', p_reference_code,
+    now(), now()
+  )
+  RETURNING id INTO v_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_actor_institution_id, auth.uid(), 'object.create',
+    'object', v_object_id::text,
+    jsonb_build_object('kind', p_kind, 'title', p_title, 'reference_code', p_reference_code),
+    now()
+  );
+
+  RETURN v_object_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_object(text, text, text, text, text, uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_object(text, text, text, text, text, uuid, text) TO authenticated;
+
+-- FunciÃ³n: crear membresÃ­a (solo institution_admin de la misma instituciÃ³n o platform_admin).
+CREATE OR REPLACE FUNCTION public.fn_create_membership(
+  p_profile_id uuid,
+  p_institution_id uuid,
+  p_campus_id uuid,
+  p_role text,
+  p_is_primary boolean
+) RETURNS uuid AS $$
+DECLARE
+  v_membership_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+  v_target_exists boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Validar rol permitido
+  IF p_role NOT IN ('student', 'custody_staff', 'reviewer', 'institution_admin') THEN
+    RAISE EXCEPTION 'Rol no vÃ¡lido';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.is_active = true
+  ORDER BY CASE m.role WHEN 'platform_admin' THEN 0 WHEN 'institution_admin' THEN 1 ELSE 2 END
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en ninguna instituciÃ³n';
+  END IF;
+
+  -- Solo institution_admin de la misma instituciÃ³n o platform_admin pueden crear membresÃ­as
+  IF v_actor_role = 'institution_admin' THEN
+    IF v_actor_institution_id <> p_institution_id THEN
+      RAISE EXCEPTION 'El actor no puede crear membresÃ­as en otra instituciÃ³n';
+    END IF;
+  ELSIF v_actor_role <> 'platform_admin' THEN
+    RAISE EXCEPTION 'El usuario no tiene permisos para crear membresÃ­as';
+  END IF;
+
+  -- Prevenir auto-escalada: un usuario no puede asignarse rol privilegiado a sÃ­ mismo
+  IF auth.uid() = p_profile_id AND p_role IN ('institution_admin', 'platform_admin') THEN
+    RAISE EXCEPTION 'No se puede auto-asignar rol privilegiado';
+  END IF;
+
+  -- Validar que el perfil destino exista
+  SELECT EXISTS (SELECT 1 FROM profiles WHERE id = p_profile_id) INTO v_target_exists;
+  IF NOT v_target_exists THEN
+    RAISE EXCEPTION 'El perfil destino no existe';
+  END IF;
+
+  -- Validar que la instituciÃ³n exista y estÃ© activa
+  IF NOT EXISTS (SELECT 1 FROM institutions WHERE id = p_institution_id AND is_active = true) THEN
+    RAISE EXCEPTION 'InstituciÃ³n no encontrada o inactiva';
+  END IF;
+
+  -- Validar campus si se proporciona
+  IF p_campus_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM campuses WHERE id = p_campus_id AND institution_id = p_institution_id AND is_active = true
+    ) THEN
+      RAISE EXCEPTION 'Campus no vÃ¡lido para esta instituciÃ³n';
+    END IF;
+  END IF;
+
+  -- Insertar membresÃ­a
+  INSERT INTO memberships (
+    profile_id, institution_id, campus_id, role, is_primary, is_active,
+    created_at, updated_at
+  )
+  VALUES (
+    p_profile_id, p_institution_id, p_campus_id, p_role, p_is_primary, true,
+    now(), now()
+  )
+  RETURNING id INTO v_membership_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    p_institution_id, auth.uid(), 'membership.create',
+    'membership', v_membership_id::text,
+    jsonb_build_object('role', p_role, 'profile_id', p_profile_id, 'institution_id', p_institution_id),
+    now()
+  );
+
+  RETURN v_membership_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_membership(uuid, uuid, uuid, text, boolean) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_membership(uuid, uuid, uuid, text, boolean) TO authenticated;
+
+-- FunciÃ³n: cambiar estado de objeto segÃºn flujo autorizado.
+-- Valida transiciones permitidas y actor autorizado.
+CREATE OR REPLACE FUNCTION public.fn_change_object_state(
+  p_object_id uuid,
+  p_new_state text
+) RETURNS void AS $$
+DECLARE
+  v_object_kind text;
+  v_object_state text;
+  v_object_institution_id uuid;
+  v_reporter_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+  v_has_custody boolean;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener datos del objeto
+  SELECT o.kind, o.state, o.institution_id, o.reporter_id
+  INTO v_object_kind, v_object_state, v_object_institution_id, v_reporter_id
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar transiciÃ³n segÃºn flujo
+  IF v_object_state = 'reported' AND p_new_state = 'under_review' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden revisar un reporte';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'in_custody' THEN
+    IF v_object_kind <> 'found' THEN
+      RAISE EXCEPTION 'Solo objetos encontrados pueden entrar en custodia';
+    END IF;
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede recibir objetos';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'published' THEN
+    IF v_object_kind = 'found' THEN
+      RAISE EXCEPTION 'Objetos encontrados requieren custodia fÃ­sica antes de publicarse';
+    END IF;
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden publicar';
+    END IF;
+  ELSIF v_object_state = 'under_review' AND p_new_state = 'rejected' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden rechazar';
+    END IF;
+  ELSIF v_object_state = 'published' AND p_new_state = 'claimed' THEN
+    -- Esta transiciÃ³n la hace el estudiante al crear una reclamaciÃ³n, no vÃ­a esta funciÃ³n
+    RAISE EXCEPTION 'Use fn_create_recovery_request para reclamar un objeto';
+  ELSIF v_object_state = 'claimed' AND p_new_state = 'approved' THEN
+    IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo revisiÃ³n o admin pueden aprobar reclamaciones';
+    END IF;
+  ELSIF v_object_state = 'claimed' AND p_new_state = 'rejected' THEN
+    IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo revisiÃ³n o admin pueden rechazar reclamaciones';
+    END IF;
+  ELSIF v_object_state = 'approved' AND p_new_state = 'delivery_prepared' THEN
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede preparar entregas';
+    END IF;
+  ELSIF v_object_state = 'delivery_prepared' AND p_new_state = 'delivered' THEN
+    IF v_actor_role <> 'custody_staff' THEN
+      RAISE EXCEPTION 'Solo personal de custodia puede confirmar entregas';
+    END IF;
+  ELSIF v_object_state = 'delivered' AND p_new_state = 'closed' THEN
+    IF v_actor_role NOT IN ('custody_staff', 'reviewer', 'institution_admin') THEN
+      RAISE EXCEPTION 'Solo custodia, revisiÃ³n o admin pueden cerrar procesos';
+    END IF;
+  ELSIF v_object_state = 'published' AND p_new_state = 'unclaimed' THEN
+    IF v_actor_role <> 'institution_admin' THEN
+      RAISE EXCEPTION 'Solo admin de instituciÃ³n puede declarar objetos no reclamados';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'TransiciÃ³n no permitida: % -> %', v_object_state, p_new_state;
+  END IF;
+
+  -- Actualizar estado
+  UPDATE objects SET state = p_new_state, updated_at = now() WHERE id = p_object_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'object.state_change',
+    'object', p_object_id::text,
+    jsonb_build_object('from_state', v_object_state, 'to_state', p_new_state),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_change_object_state(uuid, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_change_object_state(uuid, text) TO authenticated;
+
+-- FunciÃ³n: revisar reclamaciÃ³n (aprobar/rechazar/necesita mÃ¡s info).
+-- Solo reviewer o institution_admin de la misma instituciÃ³n.
+CREATE OR REPLACE FUNCTION public.fn_review_recovery_request(
+  p_recovery_request_id uuid,
+  p_decision text,
+  p_review_notes text,
+  p_decision_reason text
+) RETURNS void AS $$
+DECLARE
+  v_recovery_request_state text;
+  v_object_institution_id uuid;
+  v_object_id uuid;
+  v_actor_institution_id uuid;
+  v_actor_role text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  IF p_decision NOT IN ('approved', 'rejected', 'needs_more_info') THEN
+    RAISE EXCEPTION 'DecisiÃ³n no vÃ¡lida';
+  END IF;
+
+  -- Obtener estado de reclamaciÃ³n, instituciÃ³n del objeto y id del objeto
+  SELECT rr.state, o.institution_id, o.id
+  INTO v_recovery_request_state, v_object_institution_id, v_object_id
+  FROM recovery_requests rr
+  JOIN objects o ON o.id = rr.object_id
+  WHERE rr.id = p_recovery_request_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'ReclamaciÃ³n no encontrada';
+  END IF;
+
+  -- Validar que la reclamaciÃ³n estÃ© pendiente
+  IF v_recovery_request_state <> 'pending' THEN
+    RAISE EXCEPTION 'La reclamaciÃ³n ya fue resuelta';
+  END IF;
+
+  -- Obtener instituciÃ³n y rol del actor
+  SELECT m.institution_id, m.role INTO v_actor_institution_id, v_actor_role
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Solo reviewer o institution_admin pueden revisar
+  IF v_actor_role NOT IN ('reviewer', 'institution_admin') THEN
+    RAISE EXCEPTION 'Solo personal de revisiÃ³n o admin pueden decidir reclamaciones';
+  END IF;
+
+  -- Prevenir auto-aprobaciÃ³n: el revisor no puede ser el claimant
+  IF EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE id = p_recovery_request_id AND claimant_id = auth.uid()
+  ) THEN
+    RAISE EXCEPTION 'No se puede revisar una reclamaciÃ³n propia';
+  END IF;
+
+  -- Actualizar reclamaciÃ³n
+  UPDATE recovery_requests
+  SET state = p_decision, reviewed_by = auth.uid(), reviewed_at = now(),
+      review_notes = p_review_notes, decision_reason = p_decision_reason,
+      updated_at = now()
+  WHERE id = p_recovery_request_id;
+
+  -- Insertar revisiÃ³n en historial inmutable
+  INSERT INTO recovery_reviews (
+    recovery_request_id, reviewer_id, decision, notes, decided_at, created_at
+  )
+  VALUES (
+    p_recovery_request_id, auth.uid(), p_decision, p_review_notes, now(), now()
+  );
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'recovery_request.review',
+    'recovery_request', p_recovery_request_id::text,
+    jsonb_build_object('decision', p_decision, 'reason', p_decision_reason),
+    now()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_review_recovery_request(uuid, text, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_review_recovery_request(uuid, text, text, text) TO authenticated;
+
+-- FunciÃ³n: crear reclamaciÃ³n de recuperaciÃ³n (estudiante reporta objeto perdido/encontrado).
+-- Cualquier usuario autenticado con membresÃ­a activa en la instituciÃ³n del objeto
+-- puede crear una solicitud sobre un objeto publicado.
+-- El institution_id se deriva de la membresÃ­a del actor, no del cliente.
+-- No aprueba automÃ¡ticamente: la solicitud queda en estado 'pending'.
+CREATE OR REPLACE FUNCTION public.fn_create_recovery_request(
+  p_object_id uuid,
+  p_description text,
+  p_contact_preference text
+) RETURNS uuid AS $$
+DECLARE
+  v_recovery_request_id uuid;
+  v_object_institution_id uuid;
+  v_actor_institution_id uuid;
+  v_object_state text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Usuario no autenticado';
+  END IF;
+
+  -- Obtener instituciÃ³n y estado del objeto
+  SELECT o.institution_id, o.state INTO v_object_institution_id, v_object_state
+  FROM objects o WHERE o.id = p_object_id;
+
+  IF v_object_institution_id IS NULL THEN
+    RAISE EXCEPTION 'Objeto no encontrado';
+  END IF;
+
+  -- Validar que el objeto estÃ© publicado y sea reclamable
+  IF v_object_state <> 'published' THEN
+    RAISE EXCEPTION 'El objeto no estÃ¡ disponible para reclamaciÃ³n';
+  END IF;
+
+  -- Validar que el actor tiene membresÃ­a activa en la instituciÃ³n del objeto
+  SELECT m.institution_id INTO v_actor_institution_id
+  FROM memberships m
+  WHERE m.profile_id = auth.uid()
+    AND m.institution_id = v_object_institution_id
+    AND m.is_active = true
+  LIMIT 1;
+
+  IF v_actor_institution_id IS NULL THEN
+    RAISE EXCEPTION 'El usuario no tiene membresÃ­a activa en la instituciÃ³n del objeto';
+  END IF;
+
+  -- Validar que no exista ya una solicitud pendiente para este usuario y objeto
+  -- (el Ã­ndice parcial tambiÃ©n lo impide a nivel de BD, pero validamos explÃ­citamente)
+  IF EXISTS (
+    SELECT 1 FROM recovery_requests
+    WHERE object_id = p_object_id
+      AND claimant_id = auth.uid()
+      AND state = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'Ya existe una solicitud pendiente para este objeto y usuario';
+  END IF;
+
+  -- Insertar reclamaciÃ³n con claimant_id = auth.uid() (sin impersonaciÃ³n)
+  INSERT INTO recovery_requests (
+    object_id, claimant_id, claimed_at, description, contact_preference,
+    state, created_at, updated_at
+  )
+  VALUES (
+    p_object_id, auth.uid(), now(), p_description, p_contact_preference,
+    'pending', now(), now()
+  )
+  RETURNING id INTO v_recovery_request_id;
+
+  -- Registrar en auditorÃ­a
+  INSERT INTO public.audit_log (
+    institution_id, actor_id, action, entity_type, entity_id,
+    new_values, created_at
+  )
+  VALUES (
+    v_object_institution_id, auth.uid(), 'recovery_request.create',
+    'recovery_request', v_recovery_request_id::text,
+    jsonb_build_object('object_id', p_object_id, 'description', p_description),
+    now()
+  );
+
+  RETURN v_recovery_request_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;
+
+REVOKE ALL ON FUNCTION public.fn_create_recovery_request(uuid, text, text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.fn_create_recovery_request(uuid, text, text) TO authenticated;
+
+-- ============================================================
+-- RevisiÃ³n de consistencia de polÃ­ticas RLS (migraciones 001-005)
+-- ============================================================
+-- Esta migraciÃ³n revisa que no existan polÃ­ticas excesivamente permisivas
+-- en las tablas creadas anteriormente. Cada polÃ­tica RLS creada en migraciones
+-- previas ya es restrictiva por diseÃ±o (denegar por defecto, permitir solo
+-- lo estrictamente necesario).
+
+-- Nota: No se alteran polÃ­ticas existentes aquÃ­; esta migraciÃ³n sirve como
+-- punto de revisiÃ³n y como ubicaciÃ³n de las tablas de plataforma y funciones
+-- de servidor faltantes.
+
+-- ============================================================
+-- Pruebas de aceptaciÃ³n (ejecutar en entorno de prueba)
+-- ============================================================
+
+-- Prueba 6.1: Ninguna polÃ­tica RLS permite SELECT * a todos los autenticados en tablas privadas.
+-- (SELECT * FROM recovery_requests como usuario sin membresÃ­a en esa instituciÃ³n -- debe devolver 0 filas)
+
+-- Prueba 6.2: audit_log no se puede editar ni eliminar por usuarios ordinarios.
+-- (UPDATE audit_log SET ... -- debe fallar con RLS)
+-- (DELETE FROM audit_log -- debe fallar con RLS)
+
+-- Prueba 6.3: platform_admins no es accesible directamente desde el cliente.
+-- (SELECT * FROM platform_admins -- debe devolver 0 filas o fallar con RLS)
+
+-- Prueba 6.4: Un usuario de instituciÃ³n A no puede ver audit_log de instituciÃ³n B.
+-- (SELECT * FROM audit_log WHERE institution_id = 'institucion-B' -- debe devolver 0 filas para usuario de A)
+
+-- Prueba 6.5: fn_create_object inyecta institution_id desde membresÃ­a, no del cliente.
+-- (Intentar llamar con institution_id de otra instituciÃ³n -- debe usar la del actor)
+
+-- Prueba 6.6: fn_review_recovery_request impide auto-aprobaciÃ³n.
+-- (Intentar revisar propia reclamaciÃ³n -- debe fallar)
+
+-- Prueba 6.7: fn_change_object_state rechaza transiciones invÃ¡lidas.
+-- (Intentar reported -> delivered directamente -- debe fallar)

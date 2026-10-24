@@ -18,13 +18,8 @@ import {
   IconShield,
   IconTrash,
 } from "@/components/icons";
-import {
-  CATEGORY_LABELS,
-  DEMO_ZONES,
-  OBJECT_CATEGORIES,
-  type ObjectCategory,
-  type ObjectKind,
-} from "@/lib/demo-objects";
+import { createObject } from "@/app/actions/createObject";
+import { uploadObjectImageAction } from "@/app/actions/uploadImage";
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -36,40 +31,59 @@ interface FormErrors {
   zone?: string;
   date?: string;
   photo?: string;
+  reference_code?: string;
 }
+
+type ObjectKind = "lost" | "found";
 
 /** Fecha máxima permitida: hoy, en la zona horaria local. */
 const getMaxDate = () => {
   const now = new Date();
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
-};
+}
+
+interface ReportFormProps {
+  categories: { id: string; name: string; slug: string }[];
+}
 
 /**
- * Formulario de publicación.
+ * Formulario de publicación real (conectado a Supabase).
  *
- * Es una demostración de frontend: valida los datos, muestra la previsualización
- * de la foto y termina con un estado de éxito. No envía nada a un servidor ni
- * guarda información personal.
+ * Envía los datos a la Server Action `createObject` que llama a `fn_create_object` en la BD.
+ * Requiere usuario autenticado con membresía activa (verificado en la página padre).
  */
-export function ReportForm() {
-  const [kind, setKind] = useState<ObjectKind>("perdido");
+export function ReportForm({ categories }: ReportFormProps) {
+  const [kind, setKind] = useState<ObjectKind>("lost");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState<ObjectCategory>("electronicos");
-  const [zone, setZone] = useState<string>(DEMO_ZONES[0] ?? "");
+  const [category, setCategory] = useState<string>("");
+  const [zone, setZone] = useState<string>("");
   const [date, setDate] = useState("");
+
+  // referenceCode se genera en useEffect y se almacena en state
+  const [referenceCode, setReferenceCode] = useState<string>("");
+
+  // Generar reference_code cuando cambie el tipo
+  useEffect(() => {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const kindPrefix = kind === "lost" ? "LST" : "FND";
+    setReferenceCode(`FIC-${dateStr}-${kindPrefix}-${random}`); // eslint-disable-line react-hooks/set-state-in-effect
+  }, [kind]);
+
   const [photo, setPhoto] = useState<File | null>(null);
   const [errors, setErrors] = useState<FormErrors>({});
-  const [status, setStatus] = useState<"idle" | "sending" | "sent">("idle");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [announcement, setAnnouncement] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const titleRef = useRef<HTMLInputElement>(null);
   const previewRef = useRef<string | null>(null);
 
-  // La URL temporal de la previsualización se libera al desmontar el
-  // componente.
+  // La URL temporal de la previsualización se libera al desmontar el componente.
   useEffect(() => {
     return () => {
       if (previewRef.current) URL.revokeObjectURL(previewRef.current);
@@ -82,10 +96,10 @@ export function ReportForm() {
       URL.revokeObjectURL(previewRef.current);
       previewRef.current = null;
     }
-
     setPreview(null);
   };
 
+/** Libera la previsualización actual, si la hay. */
   const validate = (): FormErrors => {
     const next: FormErrors = {};
 
@@ -136,13 +150,55 @@ export function ReportForm() {
     }
 
     setStatus("sending");
-    setAnnouncement("Enviando el reporte de demostración.");
+    setAnnouncement("Enviando el reporte...");
+    setErrorMessage(null);
 
-    // Simula el envío para mostrar el estado de carga y el de éxito.
-    await new Promise((resolve) => window.setTimeout(resolve, 700));
+    try {
+      // 1. Generar UUID para el objeto (para la ruta de la imagen)
+      const objectId = crypto.randomUUID();
+      
+      // 1. Subir imagen si existe
+      let imagePath: string | undefined;
+      if (photo) {
+        const uploadResult = await uploadObjectImageAction(photo, objectId, false);
+        if (!uploadResult.success) {
+          setStatus("error");
+          setErrorMessage(uploadResult.error ?? "Error al subir imagen");
+          setAnnouncement(uploadResult.error ?? "Error al subir imagen");
+          setStatus("idle");
+          return;
+        }
+        imagePath = uploadResult.path;
+      }
 
-    setStatus("sent");
-    setAnnouncement("Reporte de demostración registrado.");
+      // 2. Llamar a la Server Action
+      const result = await createObject({
+        kind,
+        title: title.trim(),
+        description: description.trim(),
+        zone,
+        location: zone,
+        category_id: category,
+        reference_code: referenceCode,
+        image_path: imagePath,
+      });
+
+      if (result.success) {
+        setStatus("sent");
+        setAnnouncement("Reporte registrado correctamente.");
+      } else {
+        setStatus("error");
+        setErrorMessage(result.error ?? "Error al crear el objeto.");
+        setAnnouncement(result.error ?? "Error al crear el objeto.");
+        setStatus("idle"); // Permitir reintentar
+      }
+    } catch (error) {
+      console.error("Error submitting form:", error);
+      setStatus("error");
+      setErrorMessage("Error inesperado. Inténtalo de nuevo más tarde.");
+      setAnnouncement("Error inesperado. Inténtalo de nuevo más tarde.");
+      setStatus("idle");
+    }
   };
 
   const handlePhoto = (event: ChangeEvent<HTMLInputElement>) => {
@@ -183,17 +239,18 @@ export function ReportForm() {
   };
 
   const handleReset = () => {
-    setKind("perdido");
+    setKind("lost");
     setTitle("");
     setDescription("");
-    setCategory("electronicos");
-    setZone(DEMO_ZONES[0] ?? "");
+    setCategory("");
+    setZone("");
     setDate("");
     clearPreview();
     setPhoto(null);
     setErrors({});
     setStatus("idle");
-    setAnnouncement("Formulario limpiado.");
+    setAnnouncement("");
+    setErrorMessage(null);
     titleRef.current?.focus();
   };
 
@@ -210,9 +267,9 @@ export function ReportForm() {
 
         <p className="mt-3 max-w-xl text-[15px] leading-[1.75] text-muted">
           Tu reporte de <strong className="font-semibold text-ink">{title.trim()}</strong>{" "}
-          quedó registrado en la demostración. En el producto real, el objeto
-          se entrega en el punto de custodia institucional, el personal
-          autorizado lo registra y recién entonces se publica.
+          quedó registrado. El personal de custodia lo revisará y, si coincide con el
+          expediente, te contactará para coordinar la entrega en el punto
+          de custodia.
         </p>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -238,9 +295,9 @@ export function ReportForm() {
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {(
             [
-              { value: "perdido", title: "Lo perdí", hint: "Quiero recuperarlo." },
+              { value: "lost", title: "Lo perdí", hint: "Quiero recuperarlo." },
               {
-                value: "encontrado",
+                value: "found",
                 title: "Lo encontré",
                 hint: "Quiero entregarlo.",
               },
@@ -378,20 +435,26 @@ export function ReportForm() {
           <select
             id="categoria-objeto"
             value={category}
-            onChange={(event) =>
-              setCategory(
-                OBJECT_CATEGORIES.find((option) => option === event.target.value) ??
-                  category,
-              )
-            }
+            onChange={(event) => setCategory(event.target.value)}
             className="mt-2 h-12 w-full rounded-xl border border-line bg-white px-3.5 text-[15px] text-ink transition-colors duration-200 hover:border-forest-300 focus:border-forest-500"
+            aria-invalid={errors.category ? true : undefined}
+            aria-describedby={errors.category ? "error-categoria" : "ayuda-categoria"}
           >
-            {OBJECT_CATEGORIES.map((option) => (
-              <option key={option} value={option}>
-                {CATEGORY_LABELS[option]}
+            <option value="">Selecciona una categoría</option>
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
               </option>
             ))}
           </select>
+          {errors.category && (
+            <p id="error-categoria" role="alert" className="mt-2 text-[13px] font-medium text-lost-text">
+              {errors.category}
+            </p>
+          )}
+          <p id="ayuda-categoria" className="mt-1 text-[13px] text-muted">
+            Selecciona la categoría que mejor describa el objeto.
+          </p>
         </div>
 
         <div>
@@ -406,13 +469,28 @@ export function ReportForm() {
             value={zone}
             onChange={(event) => setZone(event.target.value)}
             className="mt-2 h-12 w-full rounded-xl border border-line bg-white px-3.5 text-[15px] text-ink transition-colors duration-200 hover:border-forest-300 focus:border-forest-500"
+            aria-invalid={errors.zone ? true : undefined}
+            aria-describedby={errors.zone ? "error-zona" : "ayuda-zona"}
           >
-            {DEMO_ZONES.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
+            <option value="">Selecciona una zona</option>
+            <option value="Biblioteca central">Biblioteca central</option>
+            <option value="Cafetería principal">Cafetería principal</option>
+            <option value="Edificio de ingeniería">Edificio de ingeniería</option>
+            <option value="Laboratorios">Laboratorios</option>
+            <option value="Auditorio central">Auditorio central</option>
+            <option value="Centro deportivo">Centro deportivo</option>
+            <option value="Recepción principal">Recepción principal</option>
+            <option value="Estacionamiento occidental">Estacionamiento occidental</option>
+            <option value="Sala de cómputo">Sala de cómputo</option>
           </select>
+          {errors.zone && (
+            <p id="error-zona" role="alert" className="mt-2 text-[13px] font-medium text-lost-text">
+              {errors.zone}
+            </p>
+          )}
+          <p id="ayuda-zona" className="mt-1 text-[13px] text-muted">
+            Selecciona la zona general del campus.
+          </p>
         </div>
 
         <div className="sm:col-span-2">
@@ -446,6 +524,26 @@ export function ReportForm() {
             </p>
           )}
         </div>
+      </div>
+
+      {/* Código de referencia ----------------------------------------------- */}
+      <div>
+        <label
+          htmlFor="reference-code"
+          className="block text-[14px] font-semibold text-ink"
+        >
+          Código de referencia
+        </label>
+        <p id="ayuda-reference" className="mt-1 text-[13px] text-muted">
+          Código único para identificar tu reporte. Se genera automáticamente.
+        </p>
+        <input
+          id="reference-code"
+          type="text"
+          value={referenceCode}
+          readOnly
+          className="mt-2 h-12 w-full rounded-xl border border-line bg-canvas px-3.5 text-[15px] text-ink font-mono text-sm"
+        />
       </div>
 
       {/* Fotografía opcional ------------------------------------------------ */}
@@ -524,11 +622,18 @@ export function ReportForm() {
         <p className="flex items-start gap-2.5 rounded-2xl border border-line bg-canvas px-4 py-3.5 text-[13px] leading-relaxed text-muted">
           <IconShield className="mt-0.5 h-4 w-4 shrink-0 text-forest-600" />
           <span>
-            Esta demostración no guarda ni envía datos personales. No incluyas
-            documentos, número de cédula ni datos de contacto en la descripción.
+            No incluyas documentos, número de cédula ni datos de contacto en la
+            descripción. El personal autorizado gestionará la entrega de forma segura.
           </span>
         </p>
       </div>
+
+      {/* Mensajes de error/estado */}
+      {errorMessage && (
+        <p role="alert" className="rounded-xl border border-lost-text bg-lost-surface px-4 py-3 text-[13px] text-lost-text">
+          <strong>Error:</strong> {errorMessage}
+        </p>
+      )}
 
       <p aria-live="polite" className="sr-only">
         {announcement}

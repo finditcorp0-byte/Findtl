@@ -3,18 +3,16 @@ import Link from "next/link";
 import { IconArrowRight } from "@/components/icons";
 import { ObjectCard } from "@/components/ObjectCard";
 import { Reveal } from "@/components/Reveal";
-import { DEMO_OBJECTS, type DemoObject } from "@/lib/demo-objects";
+import type { PublicObject } from "@/lib/supabase/queries";
 
 /**
  * Objetos recientes.
  *
- * Muestra los registros más recientes de la demostración y ofrece la entrada
- * al catálogo completo. Los datos se ordenan por antigüedad para que la
- * lista sea estable aunque se añadan objetos nuevos.
+ * Muestra los registros más recientes publicados y ofrece la entrada
+ * al catálogo completo. Los datos vienen ordenados por fecha de publicación
+ * (más recientes primero).
  */
-export function RecentObjects({ objects = DEMO_OBJECTS }: { objects?: DemoObject[] }) {
-  const recent = [...objects].sort((a, b) => a.daysAgo - b.daysAgo).slice(0, 6);
-
+export function RecentObjects({ objects = [] }: { objects?: PublicObject[] }) {
   return (
     <section
       id="objetos-recientes"
@@ -36,8 +34,8 @@ export function RecentObjects({ objects = DEMO_OBJECTS }: { objects?: DemoObject
                 Lo último publicado en el campus
               </h2>
               <p className="mt-4 text-[16px] leading-[1.7] text-muted">
-                Reportes de demostración cargados por estudiantes y personal.
-                Cada registro se revisa en el punto de custodia institucional.
+                Objetos publicados oficialmente. Cada registro se revisa en el
+                punto de custodia institucional antes de aparecer aquí.
               </p>
             </div>
 
@@ -51,15 +49,24 @@ export function RecentObjects({ objects = DEMO_OBJECTS }: { objects?: DemoObject
           </div>
         </Reveal>
 
-        <ul className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {recent.map((object, index) => (
-            <li key={object.id}>
-              <Reveal delay={index * 60} className="h-full">
-                <ObjectCard object={object} />
-              </Reveal>
-            </li>
-          ))}
-        </ul>
+        {objects.length > 0 ? (
+          <ul className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {objects.map((object, index) => (
+              <li key={object.id}>
+                <Reveal delay={index * 60} className="h-full">
+                  <ObjectCard object={object} />
+                </Reveal>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="mt-10 text-center text-muted">
+            <p className="text-[15px]">No hay objetos publicados recientemente.</p>
+            <p className="mt-2 text-[13px]">
+              Cuando se publiquen, aparecerán aquí automáticamente.
+            </p>
+          </div>
+        )}
       </div>
     </section>
   );

@@ -10,7 +10,6 @@ import {
   IconInfo,
   IconShield,
 } from "@/components/icons";
-import type { DemoObject } from "@/lib/demo-objects";
 
 const MIN_LENGTH = 20;
 
@@ -26,7 +25,13 @@ const MIN_LENGTH = 20;
  * automática. El formulario es de demostración y no envía datos a ningún
  * servidor.
  */
-export function ObjectActions({ object }: { object: DemoObject }) {
+export interface ObjectActionsProps {
+  object: {
+    kind: "perdido" | "encontrado";
+  };
+}
+
+export function ObjectActions({ object }: ObjectActionsProps) {
   const [open, setOpen] = useState(false);
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);

@@ -20,15 +20,32 @@ import {
   type ObjectFilters as CatalogFilters,
 } from "@/lib/demo-objects";
 
+/** Tipo minimo que el catalogo necesita para filtrar y mostrar */
+interface CatalogObject {
+  id: string;
+  title: string;
+  description: string;
+  kind: "perdido" | "encontrado";
+  category: string;
+  zone: string;
+  location: string;
+  publishedOn: string;
+  daysAgo: number;
+  images: string[];
+  custodyPoint: string;
+  reference: string;
+  campus: string;
+}
+
 /**
- * Catálogo de objetos.
+ * Catalogo de objetos.
  *
- * Los filtros viven en la URL: así el resultado se puede compartir, recargar
- * o abrir con un enlace directo. El componente lee los parámetros, calcula
+ * Los filtros viven en la URL: asi el resultado se puede compartir, recargar
+ * o abrir con un enlace directo. El componente lee los parametros, calcula
  * el subconjunto de objetos y los escribe de vuelta con `replace` para no
  * llenar el historial del navegador.
  */
-export function CatalogView({ objects }: { objects: DemoObject[] }) {
+export function CatalogView({ objects }: { objects: CatalogObject[] }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -49,7 +66,7 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
   const [syncedQuery, setSyncedQuery] = useState(filters.query);
 
   // Si la URL cambia desde fuera (por ejemplo, al limpiar los filtros), el
-  // campo se ajusta durante el render, que es el patrón que recomienda React
+  // campo se ajusta durante el render, que es el patron que recomienda React
   // para sincronizar estado con un valor externo.
   if (syncedQuery !== filters.query) {
     setSyncedQuery(filters.query);
@@ -104,7 +121,7 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
   }, [pathname, router]);
 
   const results = useMemo(
-    () => filterDemoObjects(objects, filters),
+    () => filterDemoObjects(objects as DemoObject[], filters),
     [objects, filters],
   );
 
@@ -116,7 +133,7 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
       <header className="max-w-2xl">
         <p className="eyebrow">
           <span className="h-px w-8 bg-forest-600" aria-hidden="true" />
-          Catálogo
+          Catalogo
         </p>
 
         <h1 className="mt-4 text-[2rem] font-semibold leading-[1.12] tracking-[-0.03em] text-ink sm:text-[2.7rem]">
@@ -124,8 +141,8 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
         </h1>
 
         <p className="mt-4 text-[16px] leading-[1.7] text-muted">
-          Registros de demostración del campus. Filtra por tipo, categoría, zona
-          o fecha para acotar la búsqueda.
+          Explora los objetos publicados en el campus. Filtra por tipo, categoria, zona
+          o fecha para acotar la busqueda.
         </p>
 
         <form
@@ -149,7 +166,7 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Busca por nombre, descripción o ubicación"
+              placeholder="Busca por nombre, descripcion o ubicacion"
               className="h-12 w-full rounded-[1rem] bg-transparent pl-11 pr-4 text-[15px] text-ink transition-colors duration-200 placeholder:text-muted hover:bg-canvas focus:bg-canvas focus:outline-none focus-visible:outline-none"
             />
           </div>
@@ -168,7 +185,7 @@ export function CatalogView({ objects }: { objects: DemoObject[] }) {
           activeCount={activeCount}
         />
 
-        <section aria-label="Resultados de la búsqueda">
+        <section aria-label="Resultados de la busqueda">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
             <p
               aria-live="polite"
