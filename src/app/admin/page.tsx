@@ -6,6 +6,7 @@ import { Footer } from "@/components/Footer";
 import { Navbar } from "@/components/Navbar";
 import { createClient } from "@/lib/supabase/server";
 import { isGlobalAdminEmail } from "@/lib/supabase/tenant";
+import CreateInstitutionForm from "@/components/admin/CreateInstitutionForm";
 
 export const metadata: Metadata = {
   title: "Panel de Administración",
@@ -191,9 +192,7 @@ export default async function AdminPage() {
                             </time>
                             <button
                               className="btn btn-primary shrink-0"
-                              onClick={() => {
-                                // TODO: Abrir modal de revisión
-                              }}
+                              type="button"
                             >
                               Revisar
                             </button>
@@ -243,9 +242,6 @@ export default async function AdminPage() {
                           </div>
                           <button
                             className="btn btn-primary shrink-0"
-                            onClick={() => {
-                              // TODO: Abrir modal para responder
-                            }}
                           >
                             Responder
                           </button>
@@ -295,18 +291,12 @@ export default async function AdminPage() {
                               <button
                                 type="button"
                                 className="btn btn-primary w-full sm:w-auto"
-                                onClick={() => {
-                                  // TODO: Confirmar entrega
-                                }}
                               >
                                 Confirmar entrega
                               </button>
                               <button
                                 type="button"
                                 className="btn btn-secondary w-full sm:w-auto"
-                                onClick={() => {
-                                  // TODO: Revocar QR
-                                }}
                               >
                                 Revocar QR
                               </button>
@@ -394,9 +384,6 @@ export default async function AdminPage() {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      // TODO: Implementar logout
-                    }}
                     className="w-full flex items-center gap-3 rounded-xl p-3 text-[14px] font-medium text-lost-text transition-colors duration-200 hover:bg-lost-surface"
                   >
                     <svg className="h-5 w-5 text-lost-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -408,6 +395,12 @@ export default async function AdminPage() {
               </div>
             </aside>
           </div>
+
+          {isGlobalAdmin && (
+            <div className="container-page pb-10">
+              <CreateInstitutionForm />
+            </div>
+          )}
         </div>
       </main>
 

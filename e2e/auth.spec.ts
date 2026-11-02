@@ -5,11 +5,6 @@ const TEST_STUDENT = {
   password: 'TestPass123!',
 };
 
-const TEST_ADMIN = {
-  email: 'e2e.admin@utb.edu.co',
-  password: 'TestPass123!',
-};
-
 test.describe('Autenticación', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/login');

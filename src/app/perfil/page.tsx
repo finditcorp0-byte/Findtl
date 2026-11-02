@@ -211,9 +211,6 @@ export default async function PerfilPage() {
 
                           {claim.state === "needs_more_info" && (
                             <button
-                              onClick={() => {
-                                // TODO: Abrir modal para responder
-                              }}
                               className="btn btn-primary shrink-0"
                             >
                               Responder
@@ -345,9 +342,6 @@ export default async function PerfilPage() {
 
                 <button
                   type="button"
-                  onClick={() => {
-                    // TODO: Implementar logout
-                  }}
                   className="w-full flex items-center gap-3 rounded-xl p-3 text-[14px] font-medium text-lost-text transition-colors duration-200 hover:bg-lost-surface"
                 >
                   <svg className="h-5 w-5 text-lost-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
