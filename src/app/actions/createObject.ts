@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { isGlobalAdminEmail } from "@/lib/supabase/tenant";
 
 /**
  * Parámetros para crear un objeto (reportar perdido/encontrado).
@@ -45,6 +46,24 @@ export async function createObject(params: CreateObjectParams): Promise<CreateOb
       success: false,
       error: "Debes iniciar sesión para publicar un objeto. Inicia sesión con tu cuenta institucional.",
     };
+  }
+
+  // Validar membresía activa o admin global (aislamiento multi-tenant)
+  const isGlobalAdmin = isGlobalAdminEmail(user.email);
+  if (!isGlobalAdmin) {
+    const { data: memberships } = await supabase
+      .from("memberships")
+      .select("id")
+      .eq("profile_id", user.id)
+      .eq("is_active", true)
+      .limit(1);
+
+    if (!memberships || memberships.length === 0) {
+      return {
+        success: false,
+        error: "No tienes una membresía activa en ninguna institución. Contacta a tu administrador.",
+      };
+    }
   }
 
   // Validar parámetros requeridos

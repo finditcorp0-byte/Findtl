@@ -11,6 +11,7 @@
 export interface Institution {
   id: string;                    // uuid PK
   name: string;                  // text NOT NULL
+  slug: string | null;           // text (identificador legible, multi-tenant)
   legal_name: string | null;     // text
   city: string;                  // text NOT NULL
   country: string;               // text NOT NULL (ej. "CO")

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Footer } from "@/components/Footer";
 import { Navbar } from "@/components/Navbar";
 import { createClient } from "@/lib/supabase/server";
+import { isGlobalAdminEmail } from "@/lib/supabase/tenant";
 
 export const metadata: Metadata = {
   title: "Panel de Administración",
@@ -20,6 +21,8 @@ export default async function AdminPage() {
     redirect("/login?next=/admin");
   }
 
+  const isGlobalAdmin = isGlobalAdminEmail(user.email);
+
   // Verificar que el usuario tiene rol de admin
   const { data: memberships } = await supabase
     .from("memberships")
@@ -27,9 +30,11 @@ export default async function AdminPage() {
     .eq("profile_id", user.id)
     .eq("is_active", true);
 
-  const isAdmin = memberships?.some(m =>
+  const hasInstitutionAdminRole = memberships?.some(m =>
     ["institution_admin", "custody_staff", "reviewer"].includes(m.role)
   );
+
+  const isAdmin = isGlobalAdmin || hasInstitutionAdminRole;
 
   if (!isAdmin) {
     notFound();
@@ -40,7 +45,7 @@ export default async function AdminPage() {
   )?.institution_id;
 
   // Obtener reclamaciones pendientes de revisión
-  const { data: pendingReviews } = await supabase
+  let pendingReviewsQuery = supabase
     .from("recovery_requests")
     .select(`
       id,
@@ -54,15 +59,21 @@ export default async function AdminPage() {
         title,
         kind,
         state,
-        reference_code
+        reference_code,
+        institution_id
       )
     `)
     .eq("state", "pending")
-    .eq("object.institution_id", adminInstitutionId)
     .order("claimed_at", { ascending: true });
 
+  if (!isGlobalAdmin && adminInstitutionId) {
+    pendingReviewsQuery = pendingReviewsQuery.eq("object.institution_id", adminInstitutionId);
+  }
+
+  const { data: pendingReviews } = await pendingReviewsQuery;
+
   // Obtener reclamaciones que necesitan más información
-  const { data: needsMoreInfo } = await supabase
+  let needsMoreInfoQuery = supabase
     .from("recovery_requests")
     .select(`
       id,
@@ -80,8 +91,13 @@ export default async function AdminPage() {
       )
     `)
     .eq("state", "needs_more_info")
-    .eq("object.institution_id", adminInstitutionId)
     .order("claimed_at", { ascending: true });
+
+  if (!isGlobalAdmin && adminInstitutionId) {
+    needsMoreInfoQuery = needsMoreInfoQuery.eq("object.institution_id", adminInstitutionId);
+  }
+
+  const { data: needsMoreInfo } = await needsMoreInfoQuery;
 
   // Obtener entregas pendientes de preparación
   const { data: pendingDeliveries } = await supabase

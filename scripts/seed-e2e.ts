@@ -12,11 +12,11 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { randomUUID } from 'crypto';
 
-// Configuración local de Supabase (valores por defecto de Supabase CLI)
-const SUPABASE_URL = 'http://127.0.0.1:54321';
-const SUPABASE_SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU';
+// Configuración de Supabase (permite override por variables de entorno; defaults locales)
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU';
+const SEED_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || 'TestPass123!';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false }
@@ -27,10 +27,15 @@ const TEST_DATA = {
   institution: {
     id: 'e2e11111-1111-1111-1111-111111111111',
     name: 'Universidad Tecnológica de Bolívar',
+    slug: 'utb',
     city: 'Cartagena',
     country: 'CO',
     email_domain: 'utb.edu.co',
   },
+  globalAdmins: [
+    { email: 'roberpar9@gmail.com', full_name: 'Admin Global 1' },
+    { email: 'juansilgadomarrugo@gmail.com', full_name: 'Admin Global 2' },
+  ],
   campus: {
     id: 'e2e22222-2222-2222-2222-222222222222',
     name: 'Campus Principal',
@@ -45,7 +50,7 @@ const TEST_DATA = {
   student: {
     profile_id: 'e2e66666-6666-6666-6666-666666666666',
     email: 'e2e.student@utb.edu.co',
-    password: 'TestPass123!',
+    password: SEED_PASSWORD,
     full_name: 'Estudiante E2E',
     role: 'student' as const,
   },
@@ -53,7 +58,7 @@ const TEST_DATA = {
   admin: {
     profile_id: 'e2e77777-7777-7777-7777-777777777777',
     email: 'e2e.admin@utb.edu.co',
-    password: 'TestPass123!',
+    password: SEED_PASSWORD,
     full_name: 'Admin E2E',
     role: 'institution_admin' as const,
   },
@@ -99,6 +104,7 @@ async function seedE2E() {
       .upsert({
         id: TEST_DATA.institution.id,
         name: TEST_DATA.institution.name,
+        slug: TEST_DATA.institution.slug,
         city: TEST_DATA.institution.city,
         country: TEST_DATA.institution.country,
         email_domain: TEST_DATA.institution.email_domain,
@@ -172,6 +178,62 @@ async function seedE2E() {
     
     const adminUserId = adminAuth.user?.id ?? TEST_DATA.admin.profile_id;
     console.log(`   ✅ Admin: ${TEST_DATA.admin.email} (${adminUserId})`);
+
+    // 4b. Crear admins globales (correos elevados)
+    console.log('4b️⃣  Creando administradores globales...');
+    const globalAdminIds: string[] = [];
+    for (const ga of TEST_DATA.globalAdmins) {
+      const { data: gaAuth, error: gaAuthError } = await supabase.auth.admin.createUser({
+        email: ga.email,
+        password: SEED_PASSWORD,
+        email_confirm: true,
+        user_metadata: { full_name: ga.full_name },
+      });
+      if (gaAuthError && gaAuthError.message !== 'User already registered' && gaAuthError.code !== 'email_exists') {
+        throw gaAuthError;
+      }
+      const gaUserId = gaAuth?.user?.id ?? null;
+      if (!gaUserId) {
+        // Si ya existía, buscar por email en profiles_private
+        const { data: existing } = await supabase
+          .from('profiles_private')
+          .select('profile_id')
+          .eq('email', ga.email)
+          .single();
+        if (existing?.profile_id) {
+          globalAdminIds.push(existing.profile_id);
+          console.log(`   ✅ Admin global existente: ${ga.email} (${existing.profile_id})`);
+          continue;
+        }
+        throw new Error(`No se pudo obtener el id de ${ga.email}`);
+      }
+      globalAdminIds.push(gaUserId);
+
+      // Perfil público
+      await supabase.from('profiles').upsert({
+        id: gaUserId,
+        full_name: ga.full_name,
+        avatar_url: null,
+        is_active: true,
+      }, { onConflict: 'id' });
+
+      // Perfil privado (dispara trigger de platform_admins si la migración está aplicada)
+      await supabase.from('profiles_private').upsert({
+        profile_id: gaUserId,
+        email: ga.email,
+        phone: null,
+        document_type: null,
+        document_number: null,
+      }, { onConflict: 'profile_id' });
+
+      // Asegurar entrada en platform_admins
+      await supabase.from('platform_admins').upsert({
+        profile_id: gaUserId,
+        is_active: true,
+      }, { onConflict: 'profile_id' });
+
+      console.log(`   ✅ Admin global: ${ga.email} (${gaUserId})`);
+    }
 
     // 5. Crear/actualizar perfiles públicos
     console.log('5️⃣  Creando perfiles públicos...');
@@ -316,6 +378,8 @@ async function seedE2E() {
     console.log('\n📋 Credenciales de prueba:');
     console.log(`   👤 Estudiante: ${TEST_DATA.student.email} / ${TEST_DATA.student.password}`);
     console.log(`   👤 Admin:      ${TEST_DATA.admin.email} / ${TEST_DATA.admin.password}`);
+    console.log('   🌐 Admins globales:');
+    TEST_DATA.globalAdmins.forEach(ga => console.log(`      - ${ga.email} / ${SEED_PASSWORD}`));
     console.log('\n📋 IDs de objetos de prueba:');
     TEST_DATA.objects.forEach(o => console.log(`   - ${o.title}: ${o.id} (${o.state})`));
 

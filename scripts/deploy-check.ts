@@ -41,8 +41,8 @@ check('.env.example existe', existsSync('.env.example'), '.env.example presente'
 check('.gitignore existe', existsSync('.gitignore'), '.gitignore presente');
 
 // 2. Verificar estructura de migraciones
-console.log('\n2. Migraciones SQL (001-009):');
-for (let i = 1; i <= 9; i++) {
+console.log('\n2. Migraciones SQL (001-010):');
+for (let i = 1; i <= 10; i++) {
   const padded = i.toString().padStart(3, '0');
   const matches = readdirSync(join('supabase', 'migrations')).filter((f: string) => f.startsWith(padded));
   check(`Migración ${padded} existe`, matches.length > 0, `supabase/migrations/${padded}_*.sql`);
@@ -54,7 +54,7 @@ try {
   const result = execSync('docker exec supabase_db_Findtl psql -U postgres -d postgres -t -c "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version"', { encoding: 'utf-8', stdio: 'pipe' });
   const applied = result.toString().trim().split('\n').filter(Boolean);
   console.log(`  Migraciones aplicadas: ${applied.length}`);
-  check('Al menos 9 migraciones', applied.length >= 9, `${applied.length} migraciones aplicadas`);
+  check('Al menos 10 migraciones', applied.length >= 10, `${applied.length} migraciones aplicadas`);
 } catch {
   check('BD accesible', false, 'No se pudo conectar a BD local');
 }
