@@ -35,3 +35,10 @@ VALUES
   ('e2e44444-4444-4444-4444-444444444444', 'e2e11111-1111-1111-1111-111111111111', 'Documentos', 'documentos', true),
   ('e2e55555-5555-5555-5555-555555555555', 'e2e11111-1111-1111-1111-111111111111', 'Llaves', 'llaves', true)
 ON CONFLICT (id) DO NOTHING;
+
+-- Promover administradores globales si sus perfiles ya existen
+INSERT INTO platform_admins (profile_id, is_active)
+SELECT pp.profile_id, true
+FROM profiles_private pp
+WHERE pp.email IN ('roberpar9@gmail.com', 'juansilgadomarrugo@gmail.com')
+ON CONFLICT (profile_id) DO UPDATE SET is_active = true;
