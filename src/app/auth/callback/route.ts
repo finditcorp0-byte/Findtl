@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { isGlobalAdminEmail } from "@/lib/supabase/tenant";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -12,7 +13,12 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      return NextResponse.redirect(new URL(next, request.url));
+      const { data: { user } } = await supabase.auth.getUser();
+      let finalNext = next;
+      if (isGlobalAdminEmail(user?.email) && (next === "/" || !next)) {
+        finalNext = "/admin";
+      }
+      return NextResponse.redirect(new URL(finalNext, request.url));
     }
   }
 
