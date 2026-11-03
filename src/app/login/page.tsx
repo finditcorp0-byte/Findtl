@@ -9,13 +9,22 @@ export const metadata: Metadata = {
   alternates: { canonical: "/login" },
 };
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; error?: string; message?: string }>;
+}) {
+  const params = await searchParams;
+  const next = params?.next && params.next.startsWith("/") && !params.next.startsWith("//")
+    ? params.next
+    : "/";
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   // Si ya hay sesión, redirigir a la página de inicio
   if (user) {
-    return <script dangerouslySetInnerHTML={{ __html: 'window.location.href = "/"' }} />;
+    return <script dangerouslySetInnerHTML={{ __html: `window.location.href = ${JSON.stringify(next)}` }} />;
   }
 
   return (
@@ -38,6 +47,7 @@ export default async function LoginPage() {
 
           <div className="space-y-4">
             <form action="/api/auth/login" method="POST" className="space-y-4">
+              <input type="hidden" name="next" value={next} />
               <div>
                 <label
                   htmlFor="email"
